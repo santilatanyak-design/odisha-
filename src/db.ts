@@ -351,6 +351,73 @@ export function subscribeDeletedIds(callback: (deletedSet: Set<string>) => void)
   });
 }
 
+// --- SONG VIEW COUNTING (3-Minute Original View Count) ---
+
+export function getLocalSongViews(): Record<string, number> {
+  try {
+    const saved = localStorage.getItem("swagat_song_views");
+    return saved ? JSON.parse(saved) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveLocalSongViews(viewsMap: Record<string, number>): void {
+  try {
+    localStorage.setItem("swagat_song_views", JSON.stringify(viewsMap));
+  } catch (e) {
+    console.error("Error saving song views to localStorage:", e);
+  }
+}
+
+export async function incrementSongViews(songId: string): Promise<number> {
+  const viewsMap = getLocalSongViews();
+  const currentCount = (viewsMap[songId] || 0) + 1;
+  viewsMap[songId] = currentCount;
+  saveLocalSongViews(viewsMap);
+
+  try {
+    const viewDocRef = doc(db, "song_views", songId);
+    await setDoc(viewDocRef, {
+      id: songId,
+      views: currentCount,
+      lastUpdated: new Date().toISOString()
+    }, { merge: true });
+
+    const songDocRef = doc(db, "songs", songId);
+    await setDoc(songDocRef, {
+      views: currentCount
+    }, { merge: true });
+  } catch (e) {
+    console.warn("Firestore incrementSongViews notice (stored locally):", e);
+  }
+
+  return currentCount;
+}
+
+export function subscribeSongViews(callback: (viewsMap: Record<string, number>) => void): () => void {
+  const viewsColRef = collection(db, "song_views");
+  return onSnapshot(viewsColRef, (snapshot) => {
+    try {
+      const viewsMap = getLocalSongViews();
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (docSnap.id && typeof data?.views === "number") {
+          viewsMap[docSnap.id] = Math.max(viewsMap[docSnap.id] || 0, data.views);
+        }
+      });
+      saveLocalSongViews(viewsMap);
+      callback(viewsMap);
+    } catch (e) {
+      console.error("Error in subscribeSongViews listener:", e);
+      callback(getLocalSongViews());
+    }
+  }, (err) => {
+    console.warn("Notice in subscribeSongViews listener:", err);
+    callback(getLocalSongViews());
+  });
+}
+
 // --- Firebase Sync Public API Functions & Realtime Listeners ---
 
 export async function saveSong(song: DbSong): Promise<void> {

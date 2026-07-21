@@ -37,7 +37,12 @@ import {
   Eye,
   Download,
   ShieldCheck,
-  FileAudio
+  FileAudio,
+  Share2,
+  Copy,
+  Send,
+  ExternalLink,
+  MessageCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -59,6 +64,9 @@ import {
   subscribeSongs,
   subscribeAds,
   subscribeDeletedIds,
+  subscribeSongViews,
+  incrementSongViews,
+  getLocalSongViews,
   DbSong,
   DbAd 
 } from "./db";
@@ -76,8 +84,10 @@ interface DisplaySong {
   artist: string;
   audioUrl: string;
   photoUrl: string;
+  photoBlob?: Blob;
   isCustom: boolean;
   createdAt: string;
+  views?: number;
 }
 
 interface DisplayAd {
@@ -191,6 +201,85 @@ export default function App() {
     title: string;
   } | null>(null);
 
+  // Share modal state
+  const [shareModalItem, setShareModalItem] = useState<{
+    type: "song" | "ad";
+    title: string;
+    subtitle?: string;
+    imageUrl?: string;
+    photoBlob?: Blob;
+  } | null>(null);
+  const [copySuccess, setCopySuccess] = useState<boolean>(false);
+
+  const getShareDetails = () => {
+    if (!shareModalItem) return { text: "", url: "" };
+    const appUrl = window.location.href;
+    const isSong = shareModalItem.type === "song";
+
+    const text = isSong 
+      ? `🎵 *${shareModalItem.title}*\n🎤 ଗାୟକ/Artist: ${shareModalItem.subtitle || "Odia Song"}\n\nସ୍ୱାଗତ ଓଡ଼ିଆ ଆପ୍‌ରେ ଏହି ସୁନ୍ଦର ଗୀତ ଓ ଫୋଟ ଦେଖନ୍ତୁ ଓ ଶୁଣନ୍ତୁ! 👇\nListen and view on Swagata Odia App:`
+      : `🖼️ *${shareModalItem.title}*\n\nସ୍ୱାଗତ ଓଡ଼ିଆ ଆପ୍‌ରେ ଏହି ସୁନ୍ଦର ଫୋଟ/ପୋଷ୍ଟର ଦେଖନ୍ତୁ! 👇\nView special poster photo on Swagata Odia App:`;
+
+    return { text, url: appUrl };
+  };
+
+  const handleWhatsAppShare = () => {
+    const { text, url } = getShareDetails();
+    const fullText = `${text}\n${url}`;
+    const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(fullText)}`;
+    window.open(whatsappUrl, "_blank");
+  };
+
+  const handleFacebookShare = () => {
+    const { text, url } = getShareDetails();
+    const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}&quote=${encodeURIComponent(text)}`;
+    window.open(facebookUrl, "_blank");
+  };
+
+  const handleNativeShare = async () => {
+    if (!shareModalItem) return;
+    const { text, url } = getShareDetails();
+
+    if (shareModalItem.photoBlob && navigator.canShare) {
+      try {
+        const ext = shareModalItem.photoBlob.type.includes("png") ? "png" : "jpg";
+        const file = new File([shareModalItem.photoBlob], `${shareModalItem.title}.${ext}`, { type: shareModalItem.photoBlob.type || "image/jpeg" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: shareModalItem.title,
+            text: text,
+            url: url,
+            files: [file]
+          });
+          return;
+        }
+      } catch (e) {
+        console.log("File share fallback:", e);
+      }
+    }
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: shareModalItem.title,
+          text: text,
+          url: url
+        });
+      } catch (e) {
+        console.log("Native share cancelled:", e);
+      }
+    } else {
+      handleCopyLink();
+    }
+  };
+
+  const handleCopyLink = () => {
+    const { text, url } = getShareDetails();
+    navigator.clipboard.writeText(`${text}\n${url}`);
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 2500);
+  };
+
   // Keep track of deleted items (sample or custom songs & posters)
   const [deletedSampleIds, setDeletedSampleIds] = useState<string[]>(() => {
     try {
@@ -302,6 +391,49 @@ export default function App() {
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.8);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  // Song Views & 3-Minute Verification Listener State
+  const [songViewsMap, setSongViewsMap] = useState<Record<string, number>>(() => getLocalSongViews());
+  const [songListeningSeconds, setSongListeningSeconds] = useState<Record<string, number>>({});
+  const [countedViewsSet, setCountedViewsSet] = useState<Set<string>>(new Set());
+  const [viewUnlockToast, setViewUnlockToast] = useState<{ songTitle: string; count: number } | null>(null);
+
+  // Subscribe to realtime views across Firestore
+  useEffect(() => {
+    const unsub = subscribeSongViews((viewsMap) => {
+      setSongViewsMap(viewsMap);
+    });
+    return () => unsub();
+  }, []);
+
+  // Track 3-Minute (180s) Listening for Original View Count
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isPlaying && currentSong) {
+      interval = setInterval(() => {
+        setSongListeningSeconds((prev) => {
+          const currentSecs = (prev[currentSong.id] || 0) + 1;
+          
+          // When listener listens for 3 minutes (180s), record an original view count!
+          if (currentSecs >= 180 && !countedViewsSet.has(currentSong.id)) {
+            setCountedViewsSet((setPrev) => new Set([...Array.from(setPrev), currentSong.id]));
+            
+            incrementSongViews(currentSong.id).then((newCount) => {
+              setSongViewsMap((vPrev) => ({ ...vPrev, [currentSong.id]: newCount }));
+              setViewUnlockToast({
+                songTitle: currentSong.title,
+                count: newCount
+              });
+              setTimeout(() => setViewUnlockToast(null), 5000);
+            });
+          }
+          
+          return { ...prev, [currentSong.id]: currentSecs };
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, currentSong, countedViewsSet]);
 
   // Song Originality Check modal state
   const [checkSongTarget, setCheckSongTarget] = useState<DisplaySong | null>(null);
@@ -948,16 +1080,37 @@ export default function App() {
                       <h2 className="text-xl md:text-2xl font-bold font-odia text-white leading-tight drop-shadow-md">
                         {allAds[currentAdIndex].title}
                       </h2>
-                      {allAds[currentAdIndex].link && (
-                        <a 
-                          href={allAds[currentAdIndex].link}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-amber-300 hover:text-amber-100 hover:underline"
+                      <div className="flex flex-wrap items-center gap-3 mt-3">
+                        <button
+                          onClick={() => {
+                            const activeAd = allAds[currentAdIndex];
+                            if (activeAd) {
+                              setShareModalItem({
+                                type: "ad",
+                                title: activeAd.title,
+                                subtitle: "Odia Special Poster",
+                                imageUrl: activeAd.imageUrl,
+                                photoBlob: activeAd.imageBlob
+                              });
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-600 border border-emerald-500/50 px-3 py-1.5 rounded-xl shadow-md transition-all cursor-pointer transform active:scale-95"
                         >
-                          වැଡ଼ିଆ ବିବରଣୀ (Learn More) <ChevronRight className="w-3.5 h-3.5" />
-                        </a>
-                      )}
+                          <Share2 className="w-3.5 h-3.5 text-emerald-200" />
+                          <span>ଫୋଟ ସେୟାର୍ (Share Photo)</span>
+                        </button>
+
+                        {allAds[currentAdIndex].link && (
+                          <a 
+                            href={allAds[currentAdIndex].link}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-300 hover:text-amber-100 hover:underline"
+                          >
+                            ଅଧିକ ବିବରଣୀ (Learn More) <ChevronRight className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </motion.div>
@@ -1139,14 +1292,39 @@ export default function App() {
                           </button>
                         </div>
 
+                        {/* Clean Views Display (Silent 3-Minute Background Counting) */}
+                        <div className="bg-gradient-to-r from-amber-50 via-emerald-50/30 to-amber-50 border border-amber-200/80 rounded-2xl px-4 py-2.5 flex items-center justify-between shadow-2xs">
+                          <div className="flex items-center gap-2 text-emerald-950 font-bold text-xs font-odia">
+                            <Eye className="w-4 h-4 text-emerald-600" />
+                            <span>ଭିଉଜ୍ (Views):</span>
+                          </div>
+                          <span className="font-extrabold text-sm text-emerald-900 bg-emerald-100/80 px-3 py-1 rounded-xl border border-emerald-300/80 font-mono shadow-2xs">
+                            {toOdiaDigits(songViewsMap[activeSong.id] || 0)}
+                          </span>
+                        </div>
+
                         {/* Secondary Action buttons */}
-                        <div className="flex items-center justify-center gap-2 pt-2">
+                        <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                          <button
+                            onClick={() => setShareModalItem({
+                              type: "song",
+                              title: activeSong.title,
+                              subtitle: activeSong.artist,
+                              imageUrl: activeSong.photoUrl,
+                              photoBlob: activeSong.photoBlob
+                            })}
+                            className="text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 px-3.5 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-odia shadow-xs transform active:scale-95"
+                          >
+                            <Share2 className="w-4 h-4 text-emerald-200" />
+                            <span>ସେୟାର୍ (Share)</span>
+                          </button>
+
                           <button
                             onClick={() => setCheckSongTarget(activeSong)}
                             className="text-xs font-bold text-amber-900 bg-white hover:bg-amber-100 border border-amber-200 px-3 py-1.5 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 font-odia shadow-xs"
                           >
                             <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                            <span>ମୂଳସତ୍ତ୍ୱ ପରୀକ୍ଷା (Originality)</span>
+                            <span>ମୂଳସତ୍ତ୍ୱ ପରୀକ୍ଷା</span>
                           </button>
 
                           <button
@@ -1214,16 +1392,23 @@ export default function App() {
                             origInfo.isOriginal ? "bg-emerald-900/80 border border-emerald-500/30 text-emerald-200" : "bg-amber-900/80 border border-amber-500/30 text-amber-200"
                           }`}>
                             <span className={`w-1.5 h-1.5 rounded-full ${origInfo.isOriginal ? "bg-emerald-400" : "bg-amber-400"}`} />
-                            {origInfo.isOriginal ? "ଅସଲି (Original)" : "କଭର୍ (Cover)"}
+                            {origInfo.isOriginal ? "ଅସଲି" : "କଭର୍"}
                           </span>
 
-                          <button
-                            onClick={(e) => handleDownloadSong(song, e)}
-                            className="pointer-events-auto p-1.5 bg-black/60 hover:bg-amber-600 text-white rounded-lg transition-colors cursor-pointer backdrop-blur-xs"
-                            title="Download Song MP3"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1 pointer-events-auto">
+                            <span className="text-[9px] font-bold text-white bg-slate-900/80 border border-slate-700/50 px-2 py-0.5 rounded-md backdrop-blur-xs flex items-center gap-1 font-mono">
+                              <Eye className="w-3 h-3 text-emerald-400" />
+                              {toOdiaDigits(songViewsMap[song.id] || song.views || 0)}
+                            </span>
+
+                            <button
+                              onClick={(e) => handleDownloadSong(song, e)}
+                              className="p-1.5 bg-black/60 hover:bg-amber-600 text-white rounded-lg transition-colors cursor-pointer backdrop-blur-xs"
+                              title="Download Song MP3"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -1236,13 +1421,28 @@ export default function App() {
                           {song.artist}
                         </p>
 
-                        <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between">
+                        <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between gap-1">
+                          <button
+                            onClick={() => setShareModalItem({
+                              type: "song",
+                              title: song.title,
+                              subtitle: song.artist,
+                              imageUrl: song.photoUrl,
+                              photoBlob: song.photoBlob
+                            })}
+                            className="text-[10px] font-bold text-emerald-800 hover:text-emerald-950 flex items-center gap-1 font-odia bg-emerald-50 hover:bg-emerald-100 px-2 py-1 rounded-md transition-colors cursor-pointer"
+                            title="Share Song"
+                          >
+                            <Share2 className="w-3 h-3 text-emerald-700" />
+                            ସେୟାର୍
+                          </button>
+
                           <button
                             onClick={() => setCheckSongTarget(song)}
                             className="text-[10px] font-bold text-amber-800 hover:text-amber-950 flex items-center gap-1 font-odia bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-md transition-colors cursor-pointer"
                           >
                             <ShieldCheck className="w-3 h-3 text-amber-700" />
-                            ପରୀକ୍ଷା (Check)
+                            ପରୀକ୍ଷା
                           </button>
 
                           <button
@@ -2198,9 +2398,15 @@ export default function App() {
                   <h5 className="font-bold text-xs sm:text-sm text-white font-odia truncate">
                     {currentSong.title}
                   </h5>
-                  <p className="text-[10px] sm:text-xs text-amber-400 truncate mt-0.5">
-                    {currentSong.artist}
-                  </p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <p className="text-[10px] sm:text-xs text-amber-400 truncate">
+                      {currentSong.artist}
+                    </p>
+                    <span className="text-[9px] font-bold text-emerald-300 bg-emerald-950/80 border border-emerald-700/60 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-mono">
+                      <Eye className="w-3 h-3 text-emerald-400" />
+                      {toOdiaDigits(songViewsMap[currentSong.id] || 0)}
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -2250,8 +2456,23 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Side: Volume, Check Originality, Download & close button */}
-              <div className="flex items-center justify-end gap-2.5 w-full md:w-[30%]">
+              {/* Right Side: Volume, Share, Check Originality, Download & close button */}
+              <div className="flex items-center justify-end gap-2 w-full md:w-[30%]">
+                <button
+                  onClick={() => setShareModalItem({
+                    type: "song",
+                    title: currentSong.title,
+                    subtitle: currentSong.artist,
+                    imageUrl: currentSong.photoUrl,
+                    photoBlob: currentSong.photoBlob
+                  })}
+                  className="p-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold font-odia shadow-xs"
+                  title="Share Song & Photo"
+                >
+                  <Share2 className="w-4 h-4 text-emerald-200" />
+                  <span className="hidden sm:inline">ସେୟାର୍</span>
+                </button>
+
                 <button
                   onClick={() => setCheckSongTarget(currentSong)}
                   className="p-2 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold font-odia"
@@ -2353,6 +2574,126 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* RICH SOCIAL SHARE MODAL (WhatsApp, Facebook, Native Share, Copy Link) */}
+      <AnimatePresence>
+        {shareModalItem && (
+          <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 z-[70]">
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden border border-emerald-100 p-6 space-y-5"
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-emerald-50 rounded-2xl text-emerald-700">
+                    <Share2 className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-slate-800 text-lg font-odia">
+                      {shareModalItem.type === "song" ? "ଗୀତ ଓ ଫୋଟ ସେୟାର୍ କରନ୍ତୁ" : "ଫୋଟ ଓ ପୋଷ୍ଟର ସେୟାର୍ କରନ୍ତୁ"}
+                    </h3>
+                    <p className="text-xs text-slate-400">Share on WhatsApp, Facebook or Copy Link</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShareModalItem(null)}
+                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Item Card Preview with Photo */}
+              <div className="flex items-center gap-4 bg-gradient-to-br from-emerald-50/50 via-amber-50/30 to-slate-50 p-4 rounded-2xl border border-emerald-100/80">
+                {shareModalItem.imageUrl && (
+                  <div className="h-20 w-20 sm:h-24 sm:w-24 aspect-square rounded-2xl overflow-hidden shadow-md flex-shrink-0 border-2 border-white bg-slate-900">
+                    <img
+                      src={shareModalItem.imageUrl}
+                      alt={shareModalItem.title}
+                      className="w-full h-full object-cover"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><rect width='400' height='400' fill='%230f172a'/><text x='200' y='210' font-family='sans-serif' font-size='20' font-weight='bold' fill='%23fef3c7' text-anchor='middle'>Odia Special</text></svg>";
+                      }}
+                    />
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider bg-emerald-100 px-2 py-0.5 rounded-md font-mono">
+                    {shareModalItem.type === "song" ? "🎵 MUSIC & COVER PHOTO" : "🖼️ POSTER PHOTO"}
+                  </span>
+                  <h4 className="font-extrabold text-slate-900 text-base font-odia line-clamp-1">
+                    {shareModalItem.title}
+                  </h4>
+                  {shareModalItem.subtitle && (
+                    <p className="text-xs text-amber-900 font-medium truncate">
+                      {shareModalItem.subtitle}
+                    </p>
+                  )}
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    Swagata Odia App
+                  </p>
+                </div>
+              </div>
+
+              {/* Direct Social Share Buttons Grid */}
+              <div className="space-y-3">
+                <p className="text-xs font-bold text-slate-600 font-odia uppercase tracking-wider">
+                  ସୋସିଆଲ୍ ମିଡିଆରେ ସେୟାର୍ କରନ୍ତୁ (Share Options):
+                </p>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {/* WhatsApp Direct Share */}
+                  <button
+                    onClick={handleWhatsAppShare}
+                    className="py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 transform active:scale-95"
+                  >
+                    <MessageCircle className="w-5 h-5 fill-white text-emerald-600" />
+                    <span className="text-xs font-odia">WhatsApp</span>
+                  </button>
+
+                  {/* Facebook Direct Share */}
+                  <button
+                    onClick={handleFacebookShare}
+                    className="py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 transform active:scale-95"
+                  >
+                    <Send className="w-5 h-5" />
+                    <span className="text-xs font-odia">Facebook</span>
+                  </button>
+                </div>
+
+                {/* Mobile System Native Share Sheet */}
+                <button
+                  onClick={handleNativeShare}
+                  className="w-full py-3 px-4 bg-amber-800 hover:bg-amber-900 text-white font-bold rounded-2xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 transform active:scale-95 text-xs font-odia"
+                >
+                  <Share2 className="w-4 h-4 text-amber-200" />
+                  <span>ଅନ୍ୟ ସୋସିଆଲ୍ ମିଡିଆରେ ସେୟାର୍ (More Apps / Mobile Share)</span>
+                </button>
+
+                {/* Copy Link Button */}
+                <button
+                  onClick={handleCopyLink}
+                  className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2 text-xs font-odia"
+                >
+                  <Copy className="w-4 h-4 text-slate-500" />
+                  <span>{copySuccess ? "✅ ଲିଙ୍କ୍ କପି ହେଲା! (Link Copied!)" : "ଲିଙ୍କ୍ କପି କରନ୍ତୁ (Copy Link & Details)"}</span>
+                </button>
+              </div>
+
+              {/* Footer Notice */}
+              <div className="pt-2 text-center text-[11px] text-slate-400 border-t border-slate-100 font-odia">
+                WhatsApp କିମ୍ବା Facebook ରେ ସେୟାର୍ କଲେ ଗୀତ ଓ ଫୋଟର ସବିଶେଷ ତଥ୍ୟ ସହିତ ଶୋ' ହେବ |
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+
 
     </div>
   );
