@@ -1,5 +1,8 @@
 import { initializeApp } from "firebase/app";
-import { initializeFirestore } from "firebase/firestore";
+import { initializeFirestore, setLogLevel } from "firebase/firestore";
+
+// Suppress non-fatal Firestore internal SDK debug logs (like BloomFilter fallback warnings)
+setLogLevel("error");
 
 const firebaseConfig = {
   projectId: "elemental-xyston-rgtt6",
@@ -16,3 +19,4 @@ const app = initializeApp(firebaseConfig);
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true
 }, "ai-studio-swagatodiawelcom-91e26fb4-9438-4b30-a1aa-8c707d4442b3");
+

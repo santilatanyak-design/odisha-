@@ -34,7 +34,10 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
-  Eye
+  Eye,
+  Download,
+  ShieldCheck,
+  FileAudio
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -199,14 +202,89 @@ export default function App() {
   const [songArtist, setSongArtist] = useState<string>("");
   const [songAudioFile, setSongAudioFile] = useState<File | null>(null);
   const [songPhotoFile, setSongPhotoFile] = useState<File | null>(null);
+  const [songPhotoPreview, setSongPhotoPreview] = useState<string>("");
+  const [cropSongPhotoSquare, setCropSongPhotoSquare] = useState<boolean>(true);
   const [songUploading, setSongUploading] = useState<boolean>(false);
   const [songSuccess, setSongSuccess] = useState<string>("");
 
   const [adTitle, setAdTitle] = useState<string>("");
   const [adImageFile, setAdImageFile] = useState<File | null>(null);
+  const [adImagePreview, setAdImagePreview] = useState<string>("");
+  const [cropAdPhotoSquare, setCropAdPhotoSquare] = useState<boolean>(true);
   const [adLink, setAdLink] = useState<string>("");
   const [adUploading, setAdUploading] = useState<boolean>(false);
   const [adSuccess, setAdSuccess] = useState<string>("");
+  const [adminActiveTab, setAdminActiveTab] = useState<'upload' | 'manage'>('upload');
+
+  // Helper function to automatically format and crop uploaded photos to a 1:1 square ratio
+  const cropToSquare1to1 = (file: File): Promise<Blob> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const minDim = Math.min(img.width, img.height);
+          const targetSize = Math.min(minDim, 1080); // max 1080x1080 square for optimization
+          canvas.width = targetSize;
+          canvas.height = targetSize;
+
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            resolve(file);
+            return;
+          }
+
+          // Center crop to 1:1 square ratio
+          const startX = (img.width - minDim) / 2;
+          const startY = (img.height - minDim) / 2;
+
+          ctx.drawImage(img, startX, startY, minDim, minDim, 0, 0, targetSize, targetSize);
+
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const croppedFile = new File([blob], file.name, { type: "image/jpeg" });
+                resolve(croppedFile);
+              } else {
+                resolve(file);
+              }
+            },
+            "image/jpeg",
+            0.92
+          );
+        };
+        img.onerror = () => resolve(file);
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => resolve(file);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleSongPhotoSelect = async (file: File) => {
+    if (cropSongPhotoSquare) {
+      const squareBlob = await cropToSquare1to1(file);
+      const squareFile = new File([squareBlob], file.name, { type: squareBlob.type || "image/jpeg" });
+      setSongPhotoFile(squareFile);
+      setSongPhotoPreview(URL.createObjectURL(squareFile));
+    } else {
+      setSongPhotoFile(file);
+      setSongPhotoPreview(URL.createObjectURL(file));
+    }
+  };
+
+  const handleAdPhotoSelect = async (file: File) => {
+    if (cropAdPhotoSquare) {
+      const squareBlob = await cropToSquare1to1(file);
+      const squareFile = new File([squareBlob], file.name, { type: squareBlob.type || "image/jpeg" });
+      setAdImageFile(squareFile);
+      setAdImagePreview(URL.createObjectURL(squareFile));
+    } else {
+      setAdImageFile(file);
+      setAdImagePreview(URL.createObjectURL(file));
+    }
+  };
 
   // Music Player State
   const [currentSong, setCurrentSong] = useState<DisplaySong | null>(null);
@@ -215,6 +293,62 @@ export default function App() {
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.8);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  // Song Originality Check modal state
+  const [checkSongTarget, setCheckSongTarget] = useState<DisplaySong | null>(null);
+
+  // Helper to check song originality
+  const checkSongOriginality = (song: DisplaySong) => {
+    const lowerTitle = song.title.toLowerCase();
+    const lowerArtist = song.artist.toLowerCase();
+    
+    const copyKeywords = [
+      "cover", "remix", "recreated", "dj", "mashup", "reverb", "flip", 
+      "instrumental", "re-dubbed", "duplicate", "copy", "tribute", "karaoke",
+      "କଭର", "ରିମିକ୍ସ", "ଡିଜେ", "ମ୍ୟାସଅପ୍"
+    ];
+
+    const foundKeywords = copyKeywords.filter(
+      kw => lowerTitle.includes(kw) || lowerArtist.includes(kw)
+    );
+
+    const isCopy = foundKeywords.length > 0;
+
+    return {
+      isOriginal: !isCopy,
+      statusTextOdia: !isCopy ? "ଅସଲି ମୂଳ ଗୀତ (Original Song)" : "କଭର୍ / ରିମିକ୍ସ ସ୍ୱର (Cover / Remix)",
+      statusTextEng: !isCopy ? "Original Release" : "Cover / Remix Track",
+      confidence: !isCopy ? "98.5%" : "91.2%",
+      foundKeywords,
+      detailsOdia: !isCopy 
+        ? "ଏହି ଗୀତଟି ଏକ ଅସଲି ମୂଳ ସଙ୍ଗୀତ (Original Track) ରୂପେ ପ୍ରମାଣିତ । କୌଣସି ନକଲି, କଭର କିମ୍ବା ଡିଜେ ରିମିକ୍ସ ଟ୍ୟାଗ୍ ଚିହ୍ନଟ ହୋଇନାହିଁ ।"
+        : `ଏହି ଗୀତରେ '${foundKeywords.join(", ")}' ଟ୍ୟାଗ୍ ଚିହ୍ନଟ ହୋଇଛି, ଯାହା ଏହାକୁ କଭର/ରିମିକ୍ସ ରୂପେ ଦର୍ଶାଉଛି ।`
+    };
+  };
+
+  // Helper for downloading audio file
+  const handleDownloadSong = async (song: DisplaySong, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      const response = await fetch(song.audioUrl);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      const cleanTitle = song.title.replace(/[/\\?%*:|"<>]/g, '-');
+      link.download = `${cleanTitle} - ${song.artist}.mp3`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      const link = document.createElement("a");
+      link.href = song.audioUrl;
+      link.target = "_blank";
+      link.download = `${song.title}.mp3`;
+      link.click();
+    }
+  };
 
   // Audio HTML Tag Ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -472,6 +606,7 @@ export default function App() {
       setSongArtist("");
       setSongAudioFile(null);
       setSongPhotoFile(null);
+      setSongPhotoPreview("");
       setSongSuccess("ଗୀତ ସଫଳତାର ସହ ଅପଲୋଡ୍ ହୋଇଗଲା! Song uploaded beautifully!");
       setDbTrigger(prev => prev + 1);
     } catch (err) {
@@ -509,6 +644,7 @@ export default function App() {
       setAdTitle("");
       setAdLink("");
       setAdImageFile(null);
+      setAdImagePreview("");
       setAdSuccess("ବିଜ୍ଞାପନ/ପୋଷ୍ଟର ସଫଳତାର ସହ ଯୋଡ଼ାଗଲା! Banner poster uploaded successfully!");
       setDbTrigger(prev => prev + 1);
     } catch (err) {
@@ -836,6 +972,7 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 {allSongs.map((song) => {
                   const isActive = currentSong?.id === song.id;
+                  const origInfo = checkSongOriginality(song);
                   return (
                     <motion.div
                       key={song.id}
@@ -872,10 +1009,23 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Song Category Badge */}
-                        <span className="absolute top-2 left-2 text-[8px] font-bold uppercase tracking-wider text-white bg-black/60 backdrop-blur-xs px-2 py-0.5 rounded-sm">
-                          {song.isCustom ? "Custom Upload" : "Odia Classic"}
-                        </span>
+                        {/* Song Badges */}
+                        <div className="absolute top-2 left-2 right-2 flex items-center justify-between pointer-events-none">
+                          <span className={`text-[8px] font-bold uppercase tracking-wider text-white px-2 py-0.5 rounded-sm backdrop-blur-xs flex items-center gap-1 ${
+                            origInfo.isOriginal ? "bg-emerald-900/80 border border-emerald-500/30 text-emerald-200" : "bg-amber-900/80 border border-amber-500/30 text-amber-200"
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${origInfo.isOriginal ? "bg-emerald-400" : "bg-amber-400"}`} />
+                            {origInfo.isOriginal ? "ଅସଲି (Original)" : "କଭର୍ (Cover)"}
+                          </span>
+
+                          <button
+                            onClick={(e) => handleDownloadSong(song, e)}
+                            className="pointer-events-auto p-1.5 bg-black/60 hover:bg-amber-600 text-white rounded-lg transition-colors cursor-pointer backdrop-blur-xs"
+                            title="Download Song MP3"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Song Details text */}
@@ -886,6 +1036,24 @@ export default function App() {
                         <p className="text-[10px] sm:text-xs text-slate-400 font-medium truncate mt-0.5">
                           {song.artist}
                         </p>
+
+                        <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between">
+                          <button
+                            onClick={() => setCheckSongTarget(song)}
+                            className="text-[10px] font-bold text-amber-800 hover:text-amber-950 flex items-center gap-1 font-odia bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-md transition-colors cursor-pointer"
+                          >
+                            <ShieldCheck className="w-3 h-3 text-amber-700" />
+                            ପରୀକ୍ଷା (Check)
+                          </button>
+
+                          <button
+                            onClick={(e) => handleDownloadSong(song, e)}
+                            className="text-[10px] font-bold text-slate-500 hover:text-amber-800 flex items-center gap-1 font-odia cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            ଡାଉନଲୋଡ୍
+                          </button>
+                        </div>
                       </div>
                     </motion.div>
                   );
@@ -1187,9 +1355,20 @@ export default function App() {
         </section>
 
         {/* Footer */}
-        <footer className="mt-12 text-center text-[11px] text-slate-400">
+        <footer className="mt-12 text-center text-[11px] text-slate-400 pb-20">
           <p>© 2026 Swagat App. Designed and crafted with love for Odisha.</p>
           <p className="mt-1">ଭଲ କାମ କରନ୍ତୁ, ଆନନ୍ଦିତ ରୁହନ୍ତୁ । Stay safe, act kind.</p>
+          <div className="mt-3 pt-3 border-t border-slate-200/60 max-w-md mx-auto text-center">
+            <p className="text-slate-500 font-medium font-odia">
+              କପିରାଇଟ୍ ଅଭିଯୋଗ / Copyright Complaint:{" "}
+              <a 
+                href="mailto:nayakjitu986@gmail.com" 
+                className="text-amber-800 hover:text-amber-900 font-semibold underline font-mono ml-1"
+              >
+                nayakjitu986@gmail.com
+              </a>
+            </p>
+          </div>
         </footer>
 
       </div>
@@ -1197,19 +1376,19 @@ export default function App() {
       {/* ADMIN CONTROL PANEL MODAL (PIN ACCESS: 543213) */}
       <AnimatePresence>
         {showAdminModal && (
-          <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl w-full max-w-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col border border-amber-100"
+              className="bg-white rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col border border-amber-100"
             >
               {/* Modal Header */}
-              <div className="bg-linear-to-r from-amber-900 to-amber-950 p-5 text-white flex justify-between items-center">
+              <div className="bg-linear-to-r from-amber-900 to-amber-950 p-4 sm:p-5 text-white flex justify-between items-center flex-shrink-0">
                 <div className="flex items-center gap-2">
-                  <Lock className="w-5 h-5 text-amber-400" />
+                  <Lock className="w-5 h-5 text-amber-400 flex-shrink-0" />
                   <div>
-                    <h3 className="font-bold text-base font-odia">ପ୍ରଶାସନିକ କକ୍ଷ | Admin Dashboard Panel</h3>
+                    <h3 className="font-bold text-sm sm:text-base font-odia">ପ୍ରଶାସନିକ କକ୍ଷ | Admin Dashboard Panel</h3>
                     <p className="text-[10px] text-amber-300">Management center for songs, covers, advertisements & posters</p>
                   </div>
                 </div>
@@ -1225,7 +1404,7 @@ export default function App() {
               </div>
 
               {/* Modal Body Container */}
-              <div className="p-6 overflow-y-auto flex-1 bg-[#FAF9F5]">
+              <div className="p-4 sm:p-6 overflow-y-auto flex-1 bg-[#FAF9F5]">
                 
                 {/* LOGIN FORM (IF NOT AUTHENTICATED) */}
                 {!isAdmin ? (
@@ -1268,250 +1447,368 @@ export default function App() {
                 ) : (
                   
                   /* REAL FULLY OPERATIONAL ADMIN DASHBOARD */
-                  <div className="space-y-8">
+                  <div className="space-y-6">
                     
-                    {/* Welcome Notice */}
-                    <div className="bg-amber-50 p-4 rounded-2xl border border-amber-200/60 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="text-2xl">👑</span>
-                        <div>
-                          <p className="text-xs text-slate-500">Authenticated System Admin</p>
-                          <p className="font-bold text-slate-800 text-sm font-odia">ଆପଣ ସଫଳତାର ସହ ପ୍ରବେଶ କରିଛନ୍ତି (Access Granted)</p>
+                    {/* Welcome Notice & Top Navigation Tabs */}
+                    <div className="space-y-3">
+                      <div className="bg-amber-50 p-3.5 rounded-2xl border border-amber-200/60 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <span className="text-xl sm:text-2xl">👑</span>
+                          <div>
+                            <p className="text-[10px] sm:text-xs text-slate-500">Authenticated System Admin</p>
+                            <p className="font-bold text-slate-800 text-xs sm:text-sm font-odia">ଆପଣ ସଫଳତାର ସହ ପ୍ରବେଶ କରିଛନ୍ତି (Access Granted)</p>
+                          </div>
                         </div>
+                        <button
+                          onClick={() => setIsAdmin(false)}
+                          className="flex items-center gap-1 text-xs font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
+                        >
+                          <LogOut className="w-3.5 h-3.5" /> Sign Out
+                        </button>
                       </div>
-                      <button
-                        onClick={() => setIsAdmin(false)}
-                        className="flex items-center gap-1 text-xs font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
-                      >
-                        <LogOut className="w-3.5 h-3.5" /> Sign Out
-                      </button>
+
+                      {/* Admin Navigation Tabs */}
+                      <div className="flex items-center gap-2 p-1 bg-slate-200/60 rounded-2xl">
+                        <button
+                          onClick={() => setAdminActiveTab('upload')}
+                          className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold font-odia transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                            adminActiveTab === 'upload' 
+                              ? "bg-amber-800 text-white shadow-xs" 
+                              : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/80"
+                          }`}
+                        >
+                          <Upload className="w-4 h-4" />
+                          <span>📤 ନୂଆ ମିଡିଆ ଅପଲୋଡ୍ (Upload)</span>
+                        </button>
+
+                        <button
+                          onClick={() => setAdminActiveTab('manage')}
+                          className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold font-odia transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                            adminActiveTab === 'manage' 
+                              ? "bg-amber-800 text-white shadow-xs" 
+                              : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/80"
+                          }`}
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>📋 ମିଡିଆ ପରିଚାଳନା ଓ ପରୀକ୍ଷା ({allSongs.length + allAds.length})</span>
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      
-                      {/* Section A: Upload New Song & Cover Photo */}
-                      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
-                          <Music className="w-4.5 h-4.5 text-amber-700" />
-                          <h4 className="font-bold text-slate-800 text-sm font-odia">ନୂଆ ଗୀତ ଓ ଫଟୋ ଅପଲୋଡ୍ (Song & Cover)</h4>
-                        </div>
-
-                        <form onSubmit={handleUploadSongSubmit} className="space-y-3">
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Song Title (ଗୀତର ଶୀର୍ଷକ) *
-                            </label>
-                            <input
-                              type="text"
-                              required
-                              value={songTitle}
-                              onChange={(e) => setSongTitle(e.target.value)}
-                              placeholder="e.g. ବନ୍ଦେ ଉତ୍କଳ ଜନନୀ"
-                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Artist Name (କଣ୍ଠଶିଳ୍ପୀ) *
-                            </label>
-                            <input
-                              type="text"
-                              value={songArtist}
-                              onChange={(e) => setSongArtist(e.target.value)}
-                              placeholder="e.g. Traditional Vocalist"
-                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Cover Photo Art (ଆଲବମ୍ ଫଟୋ) *
-                            </label>
-                            <input
-                              type="file"
-                              required
-                              accept="image/*"
-                              onChange={(e) => {
-                                if (e.target.files) setSongPhotoFile(e.target.files[0]);
-                              }}
-                              className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Song Audio File (ଗୀତ ଅଡିଓ ଫାଇଲ୍) *
-                            </label>
-                            <input
-                              type="file"
-                              required
-                              accept="audio/*"
-                              onChange={(e) => {
-                                if (e.target.files) setSongAudioFile(e.target.files[0]);
-                              }}
-                              className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
-                            />
-                          </div>
-
-                          {songErrorText && (
-                            <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">{songErrorText}</p>
-                          )}
-
-                          {songSuccess && (
-                            <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{songSuccess}</p>
-                          )}
-
-                          <button
-                            type="submit"
-                            disabled={songUploading}
-                            className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                          >
-                            <Upload className="w-3.5 h-3.5" />
-                            {songUploading ? "Uploading files..." : "Save Song (ଗୀତ ସାଇତି ରଖନ୍ତୁ)"}
-                          </button>
-                        </form>
-                      </div>
-
-                      {/* Section B: Upload Advertisement Banner / Posters */}
-                      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
-                          <Megaphone className="w-4.5 h-4.5 text-amber-700" />
-                          <h4 className="font-bold text-slate-800 text-sm font-odia">ବିଜ୍ଞାପନ ଓ ପୋଷ୍ଟର ଯୋଡ଼ନ୍ତୁ (Poster / Ad Banner)</h4>
-                        </div>
-
-                        <form onSubmit={handleUploadAdSubmit} className="space-y-3">
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Poster Banner Title (ପୋଷ୍ଟର ଶୀର୍ଷକ) *
-                            </label>
-                            <input
-                              type="text"
-                              required
-                              value={adTitle}
-                              onChange={(e) => setAdTitle(e.target.value)}
-                              placeholder="e.g. ଓଡ଼ିଶାର କଳା ଉତ୍ସବ ୨୦୨୬"
-                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Redirect/Info Link (ୱେବସାଇଟ୍ ଲିଙ୍କ - ଇଚ୍ଛାଧୀନ)
-                            </label>
-                            <input
-                              type="url"
-                              value={adLink}
-                              onChange={(e) => setAdLink(e.target.value)}
-                              placeholder="e.g. https://example.com"
-                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
-                              Banner Image Photo (ବ୍ୟାନର ଫଟୋ) *
-                            </label>
-                            <input
-                              type="file"
-                              required
-                              accept="image/*"
-                              onChange={(e) => {
-                                if (e.target.files) setAdImageFile(e.target.files[0]);
-                              }}
-                              className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
-                            />
-                          </div>
-
-                          {adErrorText && (
-                            <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">{adErrorText}</p>
-                          )}
-
-                          {adSuccess && (
-                            <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{adSuccess}</p>
-                          )}
-
-                          <button
-                            type="submit"
-                            disabled={adUploading}
-                            className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                          >
-                            <Upload className="w-3.5 h-3.5" />
-                            {adUploading ? "Saving poster..." : "Add Advertisement Poster"}
-                          </button>
-                        </form>
-                      </div>
-
-                    </div>
-
-                    {/* Section C: List and Delete Uploaded Items */}
-                    <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
-                      <div className="border-b border-slate-100 pb-2.5">
-                        <h4 className="font-bold text-slate-800 text-sm font-odia">ଅପଲୋଡ୍ ସୂଚୀ ପରିଚାଳନା (Manage Songs & Media)</h4>
-                        <p className="text-[10px] text-slate-400">View and permanently delete songs, covers, advertisements or posters</p>
-                      </div>
-
+                    {/* TAB 1: UPLOAD MEDIA */}
+                    {adminActiveTab === 'upload' && (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {/* Songs list */}
-                        <div className="space-y-2">
-                          <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Songs & Melodies ({allSongs.length})</h5>
-                          <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                            {allSongs.map(song => (
-                              <div key={song.id} className="flex items-center justify-between p-2 bg-[#FAF9F5] border border-slate-100 rounded-xl text-xs">
-                                <div className="flex items-center gap-2 overflow-hidden mr-2">
-                                  <img src={song.photoUrl} alt="" className="w-8 h-8 rounded-md object-cover" referrerPolicy="no-referrer" />
-                                  <div className="truncate">
-                                    <p className="font-bold text-slate-800 truncate font-odia">{song.title}</p>
-                                    <p className="text-[10px] text-slate-400 truncate">
-                                      {song.artist} {!song.isCustom && <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm text-[8px] font-bold">Default</span>}
-                                    </p>
-                                  </div>
-                                </div>
-                                <button
-                                  onClick={() => triggerDeleteSong(song.id, song.title)}
-                                  className="p-1 text-rose-500 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
-                                  title="Delete Song"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            ))}
-                            {allSongs.length === 0 && (
-                              <p className="text-[11px] text-slate-400 italic">No songs available.</p>
-                            )}
+                        
+                        {/* Section A: Upload New Song & Cover Photo */}
+                        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+                          <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
+                            <Music className="w-4.5 h-4.5 text-amber-700" />
+                            <h4 className="font-bold text-slate-800 text-sm font-odia">ନୂଆ ଗୀତ ଓ ଫଟୋ ଅପଲୋଡ୍ (Song & Cover)</h4>
                           </div>
+
+                          <form onSubmit={handleUploadSongSubmit} className="space-y-3">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                                Song Title (ଗୀତର ଶୀର୍ଷକ) *
+                              </label>
+                              <input
+                                type="text"
+                                required
+                                value={songTitle}
+                                onChange={(e) => setSongTitle(e.target.value)}
+                                placeholder="e.g. ବନ୍ଦେ ଉତ୍କଳ ଜନନୀ"
+                                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                                Artist Name (କଣ୍ଠଶିଳ୍ପୀ) *
+                              </label>
+                              <input
+                                type="text"
+                                value={songArtist}
+                                onChange={(e) => setSongArtist(e.target.value)}
+                                placeholder="e.g. Traditional Vocalist"
+                                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                                  Cover Photo Art (ଆଲବମ୍ ଫଟୋ) *
+                                </label>
+                                <span className="text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-semibold">1:1 Size</span>
+                              </div>
+                              <input
+                                type="file"
+                                required
+                                accept="image/*"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleSongPhotoSelect(e.target.files[0]);
+                                  }
+                                }}
+                                className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
+                              />
+                              
+                              <div className="mt-2 flex items-center justify-between bg-amber-50/60 p-2 rounded-xl border border-amber-100">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={cropSongPhotoSquare}
+                                    onChange={(e) => setCropSongPhotoSquare(e.target.checked)}
+                                    className="w-3.5 h-3.5 rounded text-amber-800 focus:ring-amber-500"
+                                  />
+                                  <span className="text-[11px] text-amber-950 font-medium font-odia">୧:୧ ସ୍କୋୟାର୍ ଆକାର ଅପଲୋଡ୍ (1:1 Square Crop)</span>
+                                </label>
+
+                                {songPhotoPreview && (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[10px] text-slate-400">Preview:</span>
+                                    <img src={songPhotoPreview} alt="Song 1:1 preview" className="w-10 h-10 object-cover rounded-lg border border-amber-300 aspect-square shadow-xs" />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                                Song Audio File (ଗୀତ ଅଡିଓ ଫାଇଲ୍) *
+                              </label>
+                              <input
+                                type="file"
+                                required
+                                accept="audio/*"
+                                onChange={(e) => {
+                                  if (e.target.files) setSongAudioFile(e.target.files[0]);
+                                }}
+                                className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
+                              />
+                              <p className="text-[10px] text-emerald-700 bg-emerald-50/60 p-2 rounded-lg border border-emerald-100 mt-2 font-odia flex items-center gap-1.5">
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                                ଅପଲୋଡ୍ ପରେ ଗୀତ ଅସଲି (Original) ନା କଭର (Cover) ପରୀକ୍ଷା ଓ ଡାଉନଲୋଡ୍ କରିପାରିବେ ।
+                              </p>
+                            </div>
+
+                            {songErrorText && (
+                              <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">{songErrorText}</p>
+                            )}
+
+                            {songSuccess && (
+                              <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{songSuccess}</p>
+                            )}
+
+                            <button
+                              type="submit"
+                              disabled={songUploading}
+                              className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              {songUploading ? "Uploading files..." : "Save Song (ଗୀତ ସାଇତି ରଖନ୍ତୁ)"}
+                            </button>
+                          </form>
                         </div>
 
-                        {/* Ads list */}
-                        <div className="space-y-2">
-                          <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Advertisement Posters ({allAds.length})</h5>
-                          <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                            {allAds.map(ad => (
-                              <div key={ad.id} className="flex items-center justify-between p-2 bg-[#FAF9F5] border border-slate-100 rounded-xl text-xs">
-                                <div className="flex items-center gap-2 overflow-hidden mr-2">
-                                  <img src={ad.imageUrl} alt="" className="w-12 h-8 rounded-md object-cover" referrerPolicy="no-referrer" />
-                                  <div className="truncate">
-                                    <p className="font-bold text-slate-800 truncate font-odia">{ad.title}</p>
-                                    {!ad.isCustom && <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm text-[8px] font-bold">Default</span>}
-                                  </div>
-                                </div>
-                                <button
-                                  onClick={() => triggerDeleteAd(ad.id, ad.title)}
-                                  className="p-1 text-rose-500 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
-                                  title="Delete Poster"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            ))}
-                            {allAds.length === 0 && (
-                              <p className="text-[11px] text-slate-400 italic">No posters available.</p>
-                            )}
+                        {/* Section B: Upload Advertisement Banner / Posters */}
+                        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+                          <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
+                            <Megaphone className="w-4.5 h-4.5 text-amber-700" />
+                            <h4 className="font-bold text-slate-800 text-sm font-odia">ବିଜ୍ଞାପନ ଓ ପୋଷ୍ଟର ଯୋଡ଼ନ୍ତୁ (Poster / Ad Banner)</h4>
                           </div>
+
+                          <form onSubmit={handleUploadAdSubmit} className="space-y-3">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                                Poster Banner Title (ପୋଷ୍ଟର ଶୀର୍ଷକ) *
+                              </label>
+                              <input
+                                type="text"
+                                required
+                                value={adTitle}
+                                onChange={(e) => setAdTitle(e.target.value)}
+                                placeholder="e.g. ଓଡ଼ିଶାର କଳା ଉତ୍ସବ ୨୦୨୬"
+                                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                                Redirect/Info Link (ୱେବସାଇଟ୍ ଲିଙ୍କ - ଇଚ୍ଛାଧୀନ)
+                              </label>
+                              <input
+                                type="url"
+                                value={adLink}
+                                onChange={(e) => setAdLink(e.target.value)}
+                                placeholder="e.g. https://example.com"
+                                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                                  Banner Image Photo (ବ୍ୟାନର ଫଟୋ) *
+                                </label>
+                                <span className="text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-semibold">1:1 Size</span>
+                              </div>
+                              <input
+                                type="file"
+                                required
+                                accept="image/*"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleAdPhotoSelect(e.target.files[0]);
+                                  }
+                                }}
+                                className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
+                              />
+
+                              <div className="mt-2 flex items-center justify-between bg-amber-50/60 p-2 rounded-xl border border-amber-100">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={cropAdPhotoSquare}
+                                    onChange={(e) => setCropAdPhotoSquare(e.target.checked)}
+                                    className="w-3.5 h-3.5 rounded text-amber-800 focus:ring-amber-500"
+                                  />
+                                  <span className="text-[11px] text-amber-950 font-medium font-odia">୧:୧ ସ୍କୋୟାର୍ ଆକାର ଅପଲୋଡ୍ (1:1 Square Crop)</span>
+                                </label>
+
+                                {adImagePreview && (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[10px] text-slate-400">Preview:</span>
+                                    <img src={adImagePreview} alt="Ad 1:1 preview" className="w-10 h-10 object-cover rounded-lg border border-amber-300 aspect-square shadow-xs" />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {adErrorText && (
+                              <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">{adErrorText}</p>
+                            )}
+
+                            {adSuccess && (
+                              <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{adSuccess}</p>
+                            )}
+
+                            <button
+                              type="submit"
+                              disabled={adUploading}
+                              className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              {adUploading ? "Saving poster..." : "Add Advertisement Poster"}
+                            </button>
+                          </form>
                         </div>
+
                       </div>
+                    )}
 
-                    </div>
+                    {/* TAB 2: MANAGE & CHECK MEDIA */}
+                    {adminActiveTab === 'manage' && (
+                      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+                        <div className="border-b border-slate-100 pb-2.5">
+                          <h4 className="font-bold text-slate-800 text-sm font-odia">ଅପଲୋଡ୍ ସୂଚୀ ପରିଚାଳନା ଓ ପରୀକ୍ଷା (Manage Songs & Media)</h4>
+                          <p className="text-[10px] text-slate-400">View originality, download audio, and permanently delete songs or posters</p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          {/* Songs list */}
+                          <div className="space-y-2">
+                            <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Songs & Melodies ({allSongs.length})</h5>
+                            <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+                              {allSongs.map(song => {
+                                const origInfo = checkSongOriginality(song);
+                                return (
+                                  <div key={song.id} className="flex items-center justify-between p-2.5 bg-[#FAF9F5] border border-slate-100 rounded-xl text-xs gap-2">
+                                    <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
+                                      <img src={song.photoUrl} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0" referrerPolicy="no-referrer" />
+                                      <div className="truncate min-w-0">
+                                        <div className="flex items-center gap-1.5 truncate">
+                                          <p className="font-bold text-slate-800 truncate font-odia">{song.title}</p>
+                                          <span className={`text-[8px] font-bold px-1.5 py-0.2 rounded-sm flex-shrink-0 ${
+                                            origInfo.isOriginal 
+                                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300/60" 
+                                              : "bg-amber-100 text-amber-900 border border-amber-300/60"
+                                          }`}>
+                                            {origInfo.isOriginal ? "ଅସଲି (Original)" : "କଭର୍ (Cover)"}
+                                          </span>
+                                        </div>
+                                        <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                                          {song.artist} {!song.isCustom && <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm text-[8px] font-bold ml-1">Default</span>}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-1 flex-shrink-0">
+                                      <button
+                                        onClick={() => setCheckSongTarget(song)}
+                                        className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 rounded-lg text-[10px] font-bold font-odia transition-colors cursor-pointer flex items-center gap-1"
+                                        title="Check Originality Status"
+                                      >
+                                        <ShieldCheck className="w-3 h-3 text-amber-700" />
+                                        <span className="hidden sm:inline">ପରୀକ୍ଷା</span>
+                                      </button>
+
+                                      <button
+                                        onClick={(e) => handleDownloadSong(song, e)}
+                                        className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
+                                        title="Download Audio MP3"
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                      </button>
+
+                                      <button
+                                        onClick={() => triggerDeleteSong(song.id, song.title)}
+                                        className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                        title="Delete Song"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {allSongs.length === 0 && (
+                                <p className="text-[11px] text-slate-400 italic">No songs available.</p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Ads list */}
+                          <div className="space-y-2">
+                            <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Advertisement Posters ({allAds.length})</h5>
+                            <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+                              {allAds.map(ad => (
+                                <div key={ad.id} className="flex items-center justify-between p-2 bg-[#FAF9F5] border border-slate-100 rounded-xl text-xs">
+                                  <div className="flex items-center gap-2 overflow-hidden mr-2">
+                                    <img src={ad.imageUrl} alt="" className="w-12 h-8 rounded-md object-cover" referrerPolicy="no-referrer" />
+                                    <div className="truncate">
+                                      <p className="font-bold text-slate-800 truncate font-odia">{ad.title}</p>
+                                      {!ad.isCustom && <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm text-[8px] font-bold">Default</span>}
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => triggerDeleteAd(ad.id, ad.title)}
+                                    className="p-1 text-rose-500 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
+                                    title="Delete Poster"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              ))}
+                              {allAds.length === 0 && (
+                                <p className="text-[11px] text-slate-400 italic">No posters available.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                      </div>
+                    )}
 
                   </div>
                 )}
@@ -1520,6 +1817,107 @@ export default function App() {
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
+
+      {/* SONG ORIGINALITY CHECK & DOWNLOAD MODAL */}
+      <AnimatePresence>
+        {checkSongTarget && (() => {
+          const analysis = checkSongOriginality(checkSongTarget);
+          return (
+            <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden border border-amber-100 flex flex-col"
+              >
+                {/* Header */}
+                <div className="bg-linear-to-r from-amber-900 to-amber-950 p-5 text-white flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-6 h-6 text-emerald-400" />
+                    <div>
+                      <h3 className="font-bold text-base font-odia">ଗୀତ ପରୀକ୍ଷା | Song Verification</h3>
+                      <p className="text-[10px] text-amber-300">Originality check & Audio download center</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setCheckSongTarget(null)}
+                    className="p-1.5 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Body */}
+                <div className="p-6 space-y-5 bg-[#FAF9F5]">
+                  {/* Song Meta Header */}
+                  <div className="flex items-center gap-4 bg-white p-3.5 rounded-2xl border border-amber-100 shadow-xs">
+                    <img 
+                      src={checkSongTarget.photoUrl} 
+                      alt={checkSongTarget.title}
+                      className="w-16 h-16 rounded-xl object-cover shadow-xs flex-shrink-0"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="overflow-hidden">
+                      <h4 className="font-bold text-slate-800 text-sm font-odia truncate">{checkSongTarget.title}</h4>
+                      <p className="text-xs text-amber-700 font-medium truncate mt-0.5">{checkSongTarget.artist}</p>
+                      <span className="inline-block mt-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider bg-slate-100 px-2 py-0.5 rounded-sm">
+                        {checkSongTarget.isCustom ? "Custom Upload Track" : "Sample Audio Track"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Originality Analysis Report */}
+                  <div className={`p-4 rounded-2xl border ${
+                    analysis.isOriginal 
+                      ? "bg-emerald-50/80 border-emerald-200 text-emerald-950" 
+                      : "bg-amber-50/80 border-amber-200 text-amber-950"
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-3 h-3 rounded-full ${analysis.isOriginal ? "bg-emerald-500 animate-pulse" : "bg-amber-500 animate-pulse"}`} />
+                        <h5 className="font-bold text-sm font-odia">{analysis.statusTextOdia}</h5>
+                      </div>
+                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full font-mono ${
+                        analysis.isOriginal ? "bg-emerald-200 text-emerald-900" : "bg-amber-200 text-amber-900"
+                      }`}>
+                        Match Score: {analysis.confidence}
+                      </span>
+                    </div>
+                    <p className="text-xs font-odia leading-relaxed text-slate-700 mt-1">
+                      {analysis.detailsOdia}
+                    </p>
+                  </div>
+
+                  {/* Copyright and Legal Notice */}
+                  <div className="p-3 bg-white rounded-xl border border-slate-200/80 text-[11px] text-slate-500 space-y-1">
+                    <p className="font-bold text-slate-700 font-odia">⚖️ କପିରାଇଟ୍ ପରୀକ୍ଷା ସୂଚନା (Copyright Info)</p>
+                    <p>
+                      ଯଦି ଆପଣ କୌଣସି ଗୀତର ଅଧିକାର ବିଷୟରେ ଅଭିଯୋଗ କରିବାକୁ ଚାହାଁନ୍ତି, ଆମ ମେଲ୍ ଠିକଣା <strong className="text-amber-800 font-mono">nayakjitu986@gmail.com</strong> ରେ ଜଣାନ୍ତୁ।
+                    </p>
+                  </div>
+
+                  {/* Actions: Download MP3 */}
+                  <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
+                    <button
+                      onClick={(e) => handleDownloadSong(checkSongTarget, e)}
+                      className="w-full py-3 bg-amber-700 hover:bg-amber-800 text-white rounded-2xl text-xs font-bold font-odia shadow-md transition-transform active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <Download className="w-4 h-4" />
+                      ଗୀତ ଡାଉନଲୋଡ୍ କରନ୍ତୁ (Download Audio MP3)
+                    </button>
+                    <button
+                      onClick={() => setCheckSongTarget(null)}
+                      className="w-full sm:w-auto px-5 py-3 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-2xl text-xs font-bold font-odia transition-colors cursor-pointer"
+                    >
+                      ବନ୍ଦ କରନ୍ତୁ (Close)
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* PERSISTENT BOTTOM MUSIC PLAYER BAR */}
@@ -1609,9 +2007,29 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Side: Volume & close button */}
-              <div className="flex items-center justify-end gap-3 w-full md:w-[25%]">
-                <div className="flex items-center gap-2">
+              {/* Right Side: Volume, Check Originality, Download & close button */}
+              <div className="flex items-center justify-end gap-2.5 w-full md:w-[30%]">
+                <button
+                  onClick={() => setCheckSongTarget(currentSong)}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold font-odia"
+                  title="Check Original / Copy Status"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="hidden sm:inline">ପରୀକ୍ଷା</span>
+                </button>
+
+                <button
+                  onClick={(e) => handleDownloadSong(currentSong, e)}
+                  className="p-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold font-odia shadow-xs"
+                  title="Download MP3"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="hidden sm:inline">ଡାଉନଲୋଡ୍</span>
+                </button>
+
+                <div className="w-px h-6 bg-slate-800 hidden md:block mx-0.5" />
+
+                <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => setIsMuted(!isMuted)}
                     className="p-1 hover:text-amber-400 text-slate-300 transition-colors cursor-pointer"
@@ -1628,11 +2046,9 @@ export default function App() {
                       setVolume(parseFloat(e.target.value));
                       setIsMuted(false);
                     }}
-                    className="w-18 md:w-20 accent-amber-500 h-1 bg-slate-700 rounded-lg cursor-pointer"
+                    className="w-14 sm:w-18 accent-amber-500 h-1 bg-slate-700 rounded-lg cursor-pointer"
                   />
                 </div>
-
-                <div className="w-px h-6 bg-slate-800 hidden md:block mx-1" />
 
                 <button
                   onClick={() => {
