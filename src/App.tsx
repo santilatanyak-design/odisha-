@@ -1,0 +1,1700 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useRef } from "react";
+import { 
+  Sun, 
+  Moon, 
+  Calendar, 
+  Clock, 
+  Sparkles, 
+  CheckCircle2, 
+  User, 
+  RotateCw, 
+  Plus, 
+  Trash2, 
+  Check, 
+  Heart, 
+  Smile, 
+  Lightbulb,
+  CheckCircle,
+  Lock,
+  Unlock,
+  Upload,
+  Music,
+  Image as ImageIcon,
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  LogOut,
+  Megaphone,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  Eye
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
+import { 
+  ODIA_QUOTES, 
+  MOOD_OPTIONS, 
+  ODIA_MONTHS, 
+  ODIA_DAYS, 
+  toOdiaDigits,
+  MoodOption,
+  OdiaQuote 
+} from "./data";
+import { 
+  getAllSongs, 
+  saveSong, 
+  deleteSong, 
+  getAllAds, 
+  saveAd, 
+  deleteAd,
+  DbSong,
+  DbAd 
+} from "./db";
+
+interface Task {
+  id: string;
+  text: string;
+  completed: boolean;
+  createdAt: string;
+}
+
+interface DisplaySong {
+  id: string;
+  title: string;
+  artist: string;
+  audioUrl: string;
+  photoUrl: string;
+  isCustom: boolean;
+  createdAt: string;
+}
+
+interface DisplayAd {
+  id: string;
+  title: string;
+  imageUrl: string;
+  link?: string;
+  isCustom: boolean;
+  createdAt: string;
+}
+
+const SAMPLE_SONGS: DisplaySong[] = [
+  {
+    id: "sample_1",
+    title: "ମଧୁର ଓଡ଼ିଶୀ ବଂଶୀ (Odissi Flute Ambient)",
+    artist: "Traditional Odia Instrumental",
+    audioUrl: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    photoUrl: "https://images.unsplash.com/photo-1599420186946-7b6fb4e297f0?q=80&w=600&auto=format&fit=crop",
+    isCustom: false,
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "sample_2",
+    title: "ଜଗନ୍ନାଥ ସୁନ୍ଦର ଭଜନ (Puri Jagannath Stotram)",
+    artist: "Divine Spiritual Chants",
+    audioUrl: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+    photoUrl: "https://images.unsplash.com/photo-1601823984263-b87b59798b70?q=80&w=600&auto=format&fit=crop",
+    isCustom: false,
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "sample_3",
+    title: "ସମ୍ବଲପୁରୀ ରଙ୍ଗବତୀ ସ୍ୱର (Sambalpuri Folk Rhythm)",
+    artist: "Folk Rhythm Instrumental",
+    audioUrl: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
+    photoUrl: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop",
+    isCustom: false,
+    createdAt: new Date().toISOString()
+  }
+];
+
+const SAMPLE_ADS: DisplayAd[] = [
+  {
+    id: "sample_ad_1",
+    title: "ଶ୍ରୀ ଜଗନ୍ନାଥ ରଥଯାତ୍ରା ୨୦୨୬ (Holy Rath Yatra Celebration)",
+    imageUrl: "https://images.unsplash.com/photo-1628157582853-a796fa650a6a?q=80&w=1200&auto=format&fit=crop",
+    link: "https://odisha.gov.in",
+    isCustom: false,
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "sample_ad_2",
+    title: "ଓଡ଼ିଶା ପର୍ଯ୍ୟଟନ - ଅତୁଲ୍ୟ ଅନୁଭୂତି (Odisha Tourism)",
+    imageUrl: "https://images.unsplash.com/photo-1588598126781-807d8b512c01?q=80&w=1200&auto=format&fit=crop",
+    link: "https://odishatourism.gov.in",
+    isCustom: false,
+    createdAt: new Date().toISOString()
+  }
+];
+
+export default function App() {
+  // Authentication & Admin Access
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [adminPin, setAdminPin] = useState<string>("");
+  const [pinError, setPinError] = useState<string>("");
+  const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
+
+  // User details
+  const [name, setName] = useState<string>(() => {
+    return localStorage.getItem("swagat_user_name") || "Santilata";
+  });
+  const [tempName, setTempName] = useState<string>(name);
+  const [isEditingName, setIsEditingName] = useState<boolean>(false);
+
+  // Time & System Calendar
+  const [time, setTime] = useState<Date>(new Date());
+  
+  // Carousel index for Ads & Posters
+  const [currentAdIndex, setCurrentAdIndex] = useState<number>(0);
+
+  // Interactive Quote of the Day
+  const [currentQuoteIndex, setCurrentQuoteIndex] = useState<number>(0);
+  
+  // Custom states
+  const [selectedMood, setSelectedMood] = useState<MoodOption | null>(null);
+  const [isBreathing, setIsBreathing] = useState<boolean>(false);
+  const [breathText, setBreathText] = useState<string>("Breathe In (ଶ୍ୱାସ ନିଅନ୍ତୁ)");
+
+  // Persistent checklist / resolutions
+  const [tasks, setTasks] = useState<Task[]>(() => {
+    const saved = localStorage.getItem("swagat_tasks");
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { return []; }
+    }
+    return [
+      { id: "1", text: "ଆଜି ଅନ୍ତତଃ ଗୋଟିଏ ଭଲ କାମ କରିବା (Do at least one good deed today)", completed: false, createdAt: new Date().toISOString() },
+      { id: "2", text: "ନିଜର ପ୍ରିୟ ଗୀତଟିଏ ଶୁଣିବା (Listen to your favorite song)", completed: true, createdAt: new Date().toISOString() }
+    ];
+  });
+  const [newTaskText, setNewTaskText] = useState<string>("");
+
+  // DB integration & custom file uploads state
+  const [customSongs, setCustomSongs] = useState<DisplaySong[]>([]);
+  const [customAds, setCustomAds] = useState<DisplayAd[]>([]);
+  const [dbTrigger, setDbTrigger] = useState<number>(0);
+
+  // Delete confirmation state to bypass native window.confirm (blocked by standard sandboxed iframes)
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    type: "song" | "ad" | "tasks";
+    id?: string;
+    title: string;
+  } | null>(null);
+
+  // Keep track of deleted default/sample items
+  const [deletedSampleIds, setDeletedSampleIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem("swagat_deleted_samples");
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { return []; }
+    }
+    return [];
+  });
+
+  // Admin Upload form fields
+  const [songTitle, setSongTitle] = useState<string>("");
+  const [songArtist, setSongArtist] = useState<string>("");
+  const [songAudioFile, setSongAudioFile] = useState<File | null>(null);
+  const [songPhotoFile, setSongPhotoFile] = useState<File | null>(null);
+  const [songUploading, setSongUploading] = useState<boolean>(false);
+  const [songSuccess, setSongSuccess] = useState<string>("");
+
+  const [adTitle, setAdTitle] = useState<string>("");
+  const [adImageFile, setAdImageFile] = useState<File | null>(null);
+  const [adLink, setAdLink] = useState<string>("");
+  const [adUploading, setAdUploading] = useState<boolean>(false);
+  const [adSuccess, setAdSuccess] = useState<string>("");
+
+  // Music Player State
+  const [currentSong, setCurrentSong] = useState<DisplaySong | null>(null);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [duration, setDuration] = useState<number>(0);
+  const [volume, setVolume] = useState<number>(0.8);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  // Audio HTML Tag Ref
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Set up clock tick
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Sync tasks to localstorage
+  useEffect(() => {
+    localStorage.setItem("swagat_tasks", JSON.stringify(tasks));
+  }, [tasks]);
+
+  // DB Sync Effect for Songs & Ads (Handles Native Object URLs cleanly)
+  useEffect(() => {
+    let activeUrls: string[] = [];
+
+    const loadFromDB = async () => {
+      try {
+        const dbSongs = await getAllSongs();
+        const mappedSongs: DisplaySong[] = dbSongs.map(s => {
+          const audioUrl = URL.createObjectURL(s.audioBlob);
+          const photoUrl = URL.createObjectURL(s.photoBlob);
+          activeUrls.push(audioUrl, photoUrl);
+          return {
+            id: s.id,
+            title: s.title,
+            artist: s.artist,
+            audioUrl,
+            photoUrl,
+            isCustom: true,
+            createdAt: s.createdAt
+          };
+        });
+        setCustomSongs(mappedSongs);
+
+        const dbAds = await getAllAds();
+        const mappedAds: DisplayAd[] = dbAds.map(a => {
+          const imageUrl = URL.createObjectURL(a.imageBlob);
+          activeUrls.push(imageUrl);
+          return {
+            id: a.id,
+            title: a.title,
+            imageUrl,
+            link: a.link,
+            isCustom: true,
+            createdAt: a.createdAt
+          };
+        });
+        setCustomAds(mappedAds);
+      } catch (err) {
+        console.error("IndexedDB Retrieval Error:", err);
+      }
+    };
+
+    loadFromDB();
+
+    // Revoke object URLs on component re-trigger or unmount
+    return () => {
+      activeUrls.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, [dbTrigger]);
+
+  // Combined sources (with deleted sample items filtered out)
+  const allSongs = [
+    ...SAMPLE_SONGS.filter(s => !deletedSampleIds.includes(s.id)),
+    ...customSongs
+  ];
+  const allAds = [
+    ...SAMPLE_ADS.filter(a => !deletedSampleIds.includes(a.id)),
+    ...customAds
+  ];
+
+  // Auto-play the next poster/ad in carousel
+  useEffect(() => {
+    if (allAds.length <= 1) return;
+    const interval = setInterval(() => {
+      setCurrentAdIndex((prev) => (prev + 1) % allAds.length);
+    }, 6000);
+    return () => clearInterval(interval);
+  }, [allAds.length]);
+
+  // Audio events synchronization
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const handleDurationChange = () => setDuration(audio.duration || 0);
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setCurrentTime(0);
+      // Auto play next song if available
+      const currentIndex = allSongs.findIndex(s => s.id === currentSong?.id);
+      if (currentIndex !== -1 && currentIndex < allSongs.length - 1) {
+        handlePlaySong(allSongs[currentIndex + 1]);
+      }
+    };
+
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("durationchange", handleDurationChange);
+    audio.addEventListener("ended", handleEnded);
+
+    return () => {
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("durationchange", handleDurationChange);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [currentSong, allSongs]);
+
+  // React on play/pause triggers
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (isPlaying) {
+      audio.play().catch(err => {
+        console.warn("Autoplay blocked or playback interrupted:", err);
+        setIsPlaying(false);
+      });
+    } else {
+      audio.pause();
+    }
+  }, [isPlaying, currentSong]);
+
+  // React to volume changes
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted]);
+
+  // Interactive breathing guide cycle
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isBreathing) {
+      let phase = 0;
+      setBreathText("ଶ୍ୱାସ ନିଅନ୍ତୁ (Inhale)...");
+      interval = setInterval(() => {
+        phase = (phase + 1) % 4;
+        if (phase === 0) {
+          setBreathText("ଶ୍ୱାସ ନିଅନ୍ତୁ (Inhale)...");
+        } else if (phase === 1) {
+          setBreathText("ଧରି ରଖନ୍ତୁ (Hold)...");
+        } else if (phase === 2) {
+          setBreathText("ଶ୍ୱାସ ଛାଡ଼ନ୍ତୁ (Exhale)...");
+        } else if (phase === 3) {
+          setBreathText("ବିଶ୍ରାମ କରନ୍ତୁ (Rest)...");
+        }
+      }, 4000);
+    }
+    return () => clearInterval(interval);
+  }, [isBreathing]);
+
+  // Play a song card (Click on cover photo will play)
+  const handlePlaySong = (song: DisplaySong) => {
+    if (currentSong?.id === song.id) {
+      setIsPlaying(!isPlaying);
+    } else {
+      setCurrentSong(song);
+      setIsPlaying(true);
+      setCurrentTime(0);
+    }
+  };
+
+  // Skip tracks forward/backward
+  const handleNextTrack = () => {
+    const currentIndex = allSongs.findIndex(s => s.id === currentSong?.id);
+    if (currentIndex !== -1) {
+      const nextIdx = (currentIndex + 1) % allSongs.length;
+      handlePlaySong(allSongs[nextIdx]);
+    }
+  };
+
+  const handlePrevTrack = () => {
+    const currentIndex = allSongs.findIndex(s => s.id === currentSong?.id);
+    if (currentIndex !== -1) {
+      const prevIdx = (currentIndex - 1 + allSongs.length) % allSongs.length;
+      handlePlaySong(allSongs[prevIdx]);
+    }
+  };
+
+  // Save customized user display name
+  const handleSaveName = () => {
+    const trimmed = tempName.trim();
+    if (trimmed) {
+      setName(trimmed);
+      localStorage.setItem("swagat_user_name", trimmed);
+      setIsEditingName(false);
+    }
+  };
+
+  // Add customized checklist task
+  const handleAddTask = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTaskText.trim()) return;
+    const newTask: Task = {
+      id: Date.now().toString(),
+      text: newTaskText.trim(),
+      completed: false,
+      createdAt: new Date().toISOString()
+    };
+    setTasks([newTask, ...tasks]);
+    setNewTaskText("");
+  };
+
+  const handleToggleTask = (id: string) => {
+    setTasks(tasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+  };
+
+  const handleDeleteTask = (id: string) => {
+    setTasks(tasks.filter(t => t.id !== id));
+  };
+
+  // Admin access validation (PIN: 543213)
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminPin === "543213") {
+      setIsAdmin(true);
+      setPinError("");
+      setAdminPin("");
+    } else {
+      setPinError("ଭୁଲ୍ ପ୍ରବେଶ ସଙ୍କେତ! (Incorrect PIN code!)");
+    }
+  };
+
+  // Admin File Submissions (IndexedDB write)
+  const handleUploadSongSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!songTitle.trim() || !songAudioFile || !songPhotoFile) {
+      setSongErrorText("Please fill out all song details & select files.");
+      return;
+    }
+
+    setSongUploading(true);
+    setSongSuccess("");
+    setSongErrorText("");
+
+    try {
+      const newSong: DbSong = {
+        id: "song_" + Date.now(),
+        title: songTitle.trim(),
+        artist: songArtist.trim() || "Unknown Artist",
+        audioBlob: songAudioFile,
+        photoBlob: songPhotoFile,
+        createdAt: new Date().toISOString()
+      };
+
+      await saveSong(newSong);
+      setSongTitle("");
+      setSongArtist("");
+      setSongAudioFile(null);
+      setSongPhotoFile(null);
+      setSongSuccess("ଗୀତ ସଫଳତାର ସହ ଅପଲୋଡ୍ ହୋଇଗଲା! Song uploaded beautifully!");
+      setDbTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error(err);
+      setSongErrorText("Failed to store audio in browser database.");
+    } finally {
+      setSongUploading(false);
+    }
+  };
+
+  const [songErrorText, setSongErrorText] = useState<string>("");
+  const [adErrorText, setAdErrorText] = useState<string>("");
+
+  const handleUploadAdSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adTitle.trim() || !adImageFile) {
+      setAdErrorText("Please select an advertisement photo and give a title.");
+      return;
+    }
+
+    setAdUploading(true);
+    setAdSuccess("");
+    setAdErrorText("");
+
+    try {
+      const newAd: DbAd = {
+        id: "ad_" + Date.now(),
+        title: adTitle.trim(),
+        imageBlob: adImageFile,
+        link: adLink.trim() || undefined,
+        createdAt: new Date().toISOString()
+      };
+
+      await saveAd(newAd);
+      setAdTitle("");
+      setAdLink("");
+      setAdImageFile(null);
+      setAdSuccess("ବିଜ୍ଞାପନ/ପୋଷ୍ଟର ସଫଳତାର ସହ ଯୋଡ଼ାଗଲା! Banner poster uploaded successfully!");
+      setDbTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error(err);
+      setAdErrorText("Failed to write advertisement poster to database.");
+    } finally {
+      setAdUploading(false);
+    }
+  };
+
+  // Delete trigger and execution handlers (fully custom, bypasses standard iframe confirm blocks)
+  const triggerDeleteSong = (id: string, title: string) => {
+    setDeleteConfirm({ type: "song", id, title });
+  };
+
+  const triggerDeleteAd = (id: string, title: string) => {
+    setDeleteConfirm({ type: "ad", id, title });
+  };
+
+  const executeDelete = async () => {
+    if (!deleteConfirm) return;
+    const { type, id, title } = deleteConfirm;
+
+    try {
+      if (type === "song" && id) {
+        if (id.startsWith("sample_")) {
+          // Delete default/sample song
+          const updated = [...deletedSampleIds, id];
+          setDeletedSampleIds(updated);
+          localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
+          if (currentSong?.id === id) {
+            setIsPlaying(false);
+            setCurrentSong(null);
+          }
+        } else {
+          // Delete custom song
+          await deleteSong(id);
+          if (currentSong?.id === id) {
+            setIsPlaying(false);
+            setCurrentSong(null);
+          }
+          setDbTrigger(prev => prev + 1);
+        }
+      } else if (type === "ad" && id) {
+        if (id.startsWith("sample_ad_")) {
+          // Delete default/sample ad
+          const updated = [...deletedSampleIds, id];
+          setDeletedSampleIds(updated);
+          localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
+          setCurrentAdIndex(0);
+        } else {
+          // Delete custom ad
+          await deleteAd(id);
+          setCurrentAdIndex(0);
+          setDbTrigger(prev => prev + 1);
+        }
+      } else if (type === "tasks") {
+        setTasks([]);
+      }
+    } catch (err) {
+      console.error("Deletion error:", err);
+    } finally {
+      setDeleteConfirm(null);
+    }
+  };
+
+  // Formatter helpers
+  const formatTimeSeconds = (sec: number) => {
+    if (isNaN(sec)) return "0:00";
+    const minutes = Math.floor(sec / 60);
+    const remainingSeconds = Math.floor(sec % 60);
+    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+  };
+
+  // Time calculations
+  const greetingData = () => {
+    const hours = time.getHours();
+    if (hours >= 5 && hours < 12) {
+      return { text: "ସୁପ୍ରଭାତ", eng: "Good Morning", icon: <Sun className="w-6 h-6 text-amber-500" /> };
+    } else if (hours >= 12 && hours < 17) {
+      return { text: "ଶୁଭ ମଧ୍ୟାହ୍ନ", eng: "Good Afternoon", icon: <Sun className="w-6 h-6 text-orange-500" /> };
+    } else if (hours >= 17 && hours < 21) {
+      return { text: "ଶୁଭ ସନ୍ଧ୍ୟା", eng: "Good Evening", icon: <Moon className="w-6 h-6 text-indigo-500" /> };
+    } else {
+      return { text: "ଶୁଭ ରାତ୍ରି", eng: "Good Night", icon: <Moon className="w-6 h-6 text-slate-500" /> };
+    }
+  };
+
+  const currentGreeting = greetingData();
+  const dayName = ODIA_DAYS[time.getDay()];
+  const monthName = ODIA_MONTHS[time.getMonth()];
+  const dateNum = toOdiaDigits(time.getDate());
+  const yearNum = toOdiaDigits(time.getFullYear());
+
+  const stdHours = time.getHours();
+  const displayHours = stdHours % 12 || 12;
+  const ampmOdia = stdHours >= 12 ? "ଅପରାହ୍ନ" : "ପୂର୍ବାହ୍ନ";
+  const formattedTimeOdia = `${toOdiaDigits(pad(displayHours))}:${toOdiaDigits(pad(time.getMinutes()))}:${toOdiaDigits(pad(time.getSeconds()))} ${ampmOdia}`;
+  const formattedTimeEng = time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  function pad(n: number) {
+    return n.toString().padStart(2, "0");
+  }
+
+  const quote: OdiaQuote = ODIA_QUOTES[currentQuoteIndex];
+
+  return (
+    <div className="min-h-screen bg-[#FDFBF7] text-slate-800 font-sans antialiased selection:bg-amber-100 selection:text-amber-900 pb-36">
+      
+      {/* HTML5 Audio Node */}
+      {currentSong && (
+        <audio 
+          ref={audioRef} 
+          src={currentSong.audioUrl} 
+          preload="auto"
+        />
+      )}
+
+      {/* Decorative Sambalpuri Art-inspired Header Border */}
+      <div className="h-3 w-full bg-linear-to-r from-red-600 via-amber-500 to-amber-700 opacity-95 flex">
+        {Array.from({ length: 50 }).map((_, idx) => (
+          <div 
+            key={idx} 
+            className={`flex-1 h-full ${idx % 2 === 0 ? 'bg-red-700' : 'bg-amber-500'}`}
+          />
+        ))}
+      </div>
+
+      {/* Main Container */}
+      <div className="max-w-6xl mx-auto px-4 pt-6">
+        
+        {/* Verification banner confirming active status */}
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4"
+        >
+          <div className="flex items-center gap-3">
+            <span className="relative flex h-3.5 w-3.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
+            </span>
+            <div>
+              <p className="text-emerald-900 font-bold text-sm flex items-center gap-2 font-odia">
+                <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 inline" />
+                ଆପ୍ଲିକେସନ୍ ପ୍ରିଭ୍ୟୁ ସଫଳତାର ସହ ଚାଲୁଅଛି! | App Status: Active & Operational
+              </p>
+              <p className="text-emerald-700 text-xs mt-0.5">
+                Play, upload, manage and delete custom songs, pictures, advertisements & posters instantly.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowAdminModal(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-amber-800 hover:bg-amber-950 text-white rounded-xl text-xs font-semibold shadow-xs border border-amber-900/10 cursor-pointer"
+          >
+            {isAdmin ? <Unlock className="w-3.5 h-3.5 text-amber-300" /> : <Lock className="w-3.5 h-3.5" />}
+            {isAdmin ? "Admin Dashboard" : "Admin Login (ପ୍ରଶାସକ)"}
+          </button>
+        </motion.div>
+
+        {/* Brand Header */}
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8 pb-6 border-b border-amber-100">
+          <div>
+            <div className="flex items-center gap-2.5 mb-1.5">
+              <span className="text-3xl">🔱</span>
+              <h1 className="font-odia text-4xl font-extrabold text-amber-900 tracking-tight flex items-center gap-2">
+                ସ୍ୱାଗତମ୍‌ <span className="text-slate-300 font-light text-2xl font-sans">|</span> <span className="font-sans font-medium text-2xl text-amber-800">Swagatam Dashboard</span>
+              </h1>
+            </div>
+            <p className="text-slate-500 text-sm max-w-xl">
+              ଏକ ପବିତ୍ର, ଆଧ୍ୟାତ୍ମିକ ଓ ଆକର୍ଷଣୀୟ ଓଡ଼ିଆ ଅନୁଭୂତି । Welcome to your customized, interactive, and media-rich Odia welcome suite.
+            </p>
+          </div>
+
+          {/* User Display Name Configurer */}
+          <div className="bg-white px-4 py-3 rounded-2xl border border-amber-100/80 shadow-xs flex items-center gap-3 w-full sm:w-auto">
+            <div className="p-2 bg-amber-50 rounded-lg text-amber-700">
+              <User className="w-5 h-5" />
+            </div>
+            {isEditingName ? (
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <input
+                  type="text"
+                  value={tempName}
+                  onChange={(e) => setTempName(e.target.value)}
+                  className="px-2.5 py-1 border border-amber-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm font-semibold max-w-[150px]"
+                  placeholder="Enter name"
+                  maxLength={20}
+                  autoFocus
+                />
+                <button
+                  onClick={handleSaveName}
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-xs font-medium cursor-pointer"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => {
+                    setTempName(name);
+                    setIsEditingName(false);
+                  }}
+                  className="px-2 py-1 text-slate-400 hover:text-slate-600 text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex justify-between items-center w-full sm:w-auto gap-4">
+                <div>
+                  <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">User Identity</p>
+                  <p className="font-bold text-slate-800 text-sm sm:text-base">{name}</p>
+                </div>
+                <button
+                  onClick={() => setIsEditingName(true)}
+                  className="text-xs text-amber-700 hover:text-amber-800 font-medium hover:underline cursor-pointer"
+                >
+                  ବଦଳାନ୍ତୁ (Edit)
+                </button>
+              </div>
+            )}
+          </div>
+        </header>
+
+        {/* Advertisements & Poster Showcase - Carousel Banner */}
+        <section className="mb-8 overflow-hidden rounded-3xl bg-amber-950 border border-amber-950 text-white relative shadow-md">
+          {allAds.length > 0 && (
+            <div className="h-[220px] md:h-[260px] w-full relative">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={allAds[currentAdIndex].id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.6 }}
+                  className="absolute inset-0 w-full h-full"
+                >
+                  {/* Background Image Banner */}
+                  <img 
+                    src={allAds[currentAdIndex].imageUrl} 
+                    alt={allAds[currentAdIndex].title}
+                    className="w-full h-full object-cover opacity-35 filter brightness-90"
+                    referrerPolicy="no-referrer"
+                  />
+                  
+                  {/* Text Overlay & Call to Action */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex flex-col justify-end p-6 md:p-8">
+                    <div className="max-w-2xl">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Megaphone className="w-4.5 h-4.5 text-amber-400" />
+                        <span className="text-[10px] font-bold tracking-wider text-amber-300 uppercase bg-amber-900/50 border border-amber-500/30 px-2 py-0.5 rounded-md">
+                          {allAds[currentAdIndex].isCustom ? "CUSTOM POSTER / ADVERTISEMENT" : "SPOTLIGHT"}
+                        </span>
+                      </div>
+                      <h2 className="text-xl md:text-2xl font-bold font-odia text-white leading-tight drop-shadow-md">
+                        {allAds[currentAdIndex].title}
+                      </h2>
+                      {allAds[currentAdIndex].link && (
+                        <a 
+                          href={allAds[currentAdIndex].link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-amber-300 hover:text-amber-100 hover:underline"
+                        >
+                          වැଡ଼ିଆ ବିବରଣୀ (Learn More) <ChevronRight className="w-3.5 h-3.5" />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              </AnimatePresence>
+
+              {/* Navigation Indicators */}
+              <div className="absolute bottom-4 right-6 flex items-center gap-2 z-10">
+                <button
+                  onClick={() => setCurrentAdIndex(prev => (prev - 1 + allAds.length) % allAds.length)}
+                  className="p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <div className="flex gap-1">
+                  {allAds.map((ad, idx) => (
+                    <button
+                      key={ad.id}
+                      onClick={() => setCurrentAdIndex(idx)}
+                      className={`h-1.5 rounded-full transition-all ${currentAdIndex === idx ? 'w-4 bg-amber-400' : 'w-1.5 bg-white/40'}`}
+                    />
+                  ))}
+                </div>
+                <button
+                  onClick={() => setCurrentAdIndex(prev => (prev + 1) % allAds.length)}
+                  className="p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors cursor-pointer"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* Primary Interactive Dashboard Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          {/* Column 1: Media Player & Song Album Art Gallery */}
+          <div className="space-y-6 lg:col-span-2">
+            
+            {/* Song Gallery ("photo ଉପରେ କ୍ଲିକ କରିଲେ ଗୀତ ବାଜିବ") */}
+            <div className="bg-white p-6 rounded-3xl border border-amber-100/80 shadow-xs">
+              <div className="flex items-center justify-between mb-4 border-b border-amber-50 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-amber-50 rounded-xl text-amber-800">
+                    <Music className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 font-odia text-lg">ସଙ୍ଗୀତ ମଞ୍ଜୁଷା (Photo & Audio Hub)</h3>
+                    <p className="text-xs text-slate-400">କ୍ଲିକ୍ କଲେ ଗୀତ ବାଜିବ | Click any photo to play the song instantly</p>
+                  </div>
+                </div>
+                <span className="text-xs bg-amber-100 text-amber-900 font-bold px-2.5 py-1 rounded-full border border-amber-200">
+                  {allSongs.length} Tracks Available
+                </span>
+              </div>
+
+              {/* Grid of Albums */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                {allSongs.map((song) => {
+                  const isActive = currentSong?.id === song.id;
+                  return (
+                    <motion.div
+                      key={song.id}
+                      whileHover={{ y: -3 }}
+                      className={`group relative rounded-2xl overflow-hidden border transition-all flex flex-col justify-between ${
+                        isActive 
+                          ? "border-amber-600 shadow-md ring-2 ring-amber-600/10 bg-amber-50/10" 
+                          : "border-slate-100 hover:border-amber-200 bg-white shadow-xs"
+                      }`}
+                    >
+                      {/* Album Photo Container (Click plays song!) */}
+                      <div 
+                        onClick={() => handlePlaySong(song)}
+                        className="aspect-square w-full relative overflow-hidden bg-slate-100 cursor-pointer"
+                        title="Click photo to play!"
+                      >
+                        <img 
+                          src={song.photoUrl} 
+                          alt={song.title}
+                          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                          referrerPolicy="no-referrer"
+                        />
+                        
+                        {/* Hover Overlay & Play State indicators */}
+                        <div className={`absolute inset-0 bg-black/45 flex items-center justify-center transition-opacity duration-300 ${
+                          isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}>
+                          <div className="h-12 w-12 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-lg transition-transform hover:scale-110">
+                            {isActive && isPlaying ? (
+                              <Pause className="w-5 h-5 fill-white text-white" />
+                            ) : (
+                              <Play className="w-5 h-5 fill-white text-white translate-x-0.5" />
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Song Category Badge */}
+                        <span className="absolute top-2 left-2 text-[8px] font-bold uppercase tracking-wider text-white bg-black/60 backdrop-blur-xs px-2 py-0.5 rounded-sm">
+                          {song.isCustom ? "Custom Upload" : "Odia Classic"}
+                        </span>
+                      </div>
+
+                      {/* Song Details text */}
+                      <div className="p-3">
+                        <h4 className="font-bold text-slate-800 text-xs sm:text-sm line-clamp-1 group-hover:text-amber-800 transition-colors font-odia">
+                          {song.title}
+                        </h4>
+                        <p className="text-[10px] sm:text-xs text-slate-400 font-medium truncate mt-0.5">
+                          {song.artist}
+                        </p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+
+              {/* No Songs State */}
+              {allSongs.length === 0 && (
+                <div className="text-center py-12 border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                  <Music className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <p className="text-xs text-slate-500 font-medium">No melodies uploaded yet.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Open Admin Dashboard to upload your favorite tracks!</p>
+                </div>
+              )}
+            </div>
+
+            {/* Wisdom and Mood widgets row */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              {/* Traditional Wisdom Quote wheel */}
+              <div className="bg-white p-6 rounded-3xl border border-amber-100/80 shadow-xs flex flex-col justify-between min-h-[260px]">
+                <div>
+                  <div className="flex items-center justify-between mb-4 border-b border-amber-50 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Lightbulb className="w-5 h-5 text-amber-600" />
+                      <h3 className="font-bold text-slate-800 font-odia">ଆଜିର ବିଚାର (Wisdom)</h3>
+                    </div>
+                    <button 
+                      onClick={() => setCurrentQuoteIndex((prev) => (prev + 1) % ODIA_QUOTES.length)}
+                      className="p-1.5 hover:bg-amber-50 rounded-lg text-amber-700 transition-colors cursor-pointer"
+                      title="Next Quote"
+                    >
+                      <RotateCw className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={quote.id}
+                      initial={{ opacity: 0, x: 15 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -15 }}
+                      transition={{ duration: 0.25 }}
+                      className="space-y-3"
+                    >
+                      <div className="bg-amber-50/40 p-4 rounded-2xl border-l-4 border-amber-500">
+                        <p className="font-odia text-lg font-bold text-amber-950 leading-relaxed">
+                          &ldquo; {quote.odia} &rdquo;
+                        </p>
+                        <p className="text-[11px] text-amber-800/80 italic mt-1 font-mono">
+                          {quote.english}
+                        </p>
+                      </div>
+
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        <strong>Meaning:</strong> {quote.meaning}
+                      </p>
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
+                  <span>Ancient Odia Proverb</span>
+                  <span>{quote.id} / {ODIA_QUOTES.length}</span>
+                </div>
+              </div>
+
+              {/* Mood Meter & Breathing Widget */}
+              <div className="bg-white p-6 rounded-3xl border border-amber-100/80 shadow-xs">
+                <div className="flex items-center gap-2 mb-4 border-b border-amber-50 pb-3">
+                  <Smile className="w-5 h-5 text-amber-700" />
+                  <h3 className="font-bold text-slate-800 font-odia">ଆଜି ମନର ଭାବ (Mood Meter)</h3>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  {MOOD_OPTIONS.map((mood) => (
+                    <button
+                      key={mood.id}
+                      onClick={() => setSelectedMood(mood)}
+                      className={`flex items-center gap-2 p-2 rounded-xl border text-xs font-semibold text-left transition-all cursor-pointer ${
+                        selectedMood?.id === mood.id 
+                          ? `${mood.color} ${mood.colorBg} border-amber-500 ring-2 ring-amber-500/20` 
+                          : "border-slate-100 bg-slate-50 hover:bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      <span>{mood.emoji}</span>
+                      <span className="font-odia truncate">{mood.nameOdia.split(" ")[0]}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <AnimatePresence mode="wait">
+                  {selectedMood ? (
+                    <motion.div
+                      key={selectedMood.id}
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className={`p-3 rounded-2xl border border-amber-100 ${selectedMood.colorBg} space-y-2`}
+                    >
+                      <p className="font-odia text-xs font-bold text-amber-950 leading-relaxed">
+                        {selectedMood.messageOdia}
+                      </p>
+                      <p className="font-odia text-[11px] text-amber-900 font-semibold border-t border-amber-200/40 pt-1">
+                        🎯 {selectedMood.activityOdia}
+                      </p>
+
+                      {/* Deep breathing trigger if stressed/calm */}
+                      {(selectedMood.id === "calm" || selectedMood.id === "anxious") && (
+                        <div className="pt-2">
+                          <button
+                            onClick={() => setIsBreathing(!isBreathing)}
+                            className="w-full py-1 bg-amber-800 hover:bg-amber-950 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                          >
+                            {isBreathing ? "🛑 Stop Exercise" : "🧘 Start 4-Second Breathing"}
+                          </button>
+                          {isBreathing && (
+                            <div className="mt-2 text-center">
+                              <p className="text-[11px] font-bold font-odia text-amber-950 animate-pulse">{breathText}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </motion.div>
+                  ) : (
+                    <p className="text-center py-4 text-slate-400 text-[11px] border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                      Select your current mood to read personalized suggestions.
+                    </p>
+                  )}
+                </AnimatePresence>
+              </div>
+
+            </div>
+
+          </div>
+
+          {/* Column 2: Digital Clock, Calendar, & Checklist */}
+          <div className="space-y-6 lg:col-span-1">
+            
+            {/* Clock and Calendar Combo Card */}
+            <div className="bg-linear-to-b from-amber-900 to-amber-950 text-amber-50 p-6 rounded-3xl shadow-sm border border-amber-950 relative overflow-hidden">
+              <div className="absolute right-[-30px] bottom-[-30px] opacity-10 text-8xl select-none font-odia">
+                ଓ
+              </div>
+              
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-xs bg-amber-800/60 text-amber-100 px-3 py-1 rounded-full border border-amber-700/40 font-semibold">
+                  ସମୟ ଚକ୍ର (Clock)
+                </span>
+                {currentGreeting.icon}
+              </div>
+
+              {/* Ticking Time */}
+              <div className="mb-4">
+                <p className="text-4xl font-extrabold font-odia tracking-wide text-amber-200">
+                  {formattedTimeOdia}
+                </p>
+                <p className="text-sm text-amber-300 font-mono font-medium mt-0.5">
+                  {formattedTimeEng}
+                </p>
+              </div>
+
+              {/* Day Details */}
+              <div className="border-t border-amber-800/50 pt-4 mt-4 space-y-2">
+                <div>
+                  <p className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider">ଓଡ଼ିଆ ତାରିଖ</p>
+                  <p className="font-odia text-base font-bold text-white mt-0.5">
+                    {dayName}, {dateNum} {monthName} {yearNum}
+                  </p>
+                </div>
+                
+                <p className="font-odia text-sm font-bold text-amber-300 mt-2">
+                  {currentGreeting.text}, {name}!
+                </p>
+              </div>
+            </div>
+
+            {/* Daily Resolutions Checklist */}
+            <div className="bg-white p-6 rounded-3xl border border-amber-100/80 shadow-xs flex flex-col justify-between min-h-[360px]">
+              <div>
+                <div className="flex items-center gap-2 mb-4 border-b border-amber-50 pb-3">
+                  <CheckCircle className="w-5 h-5 text-amber-700" />
+                  <div>
+                    <h3 className="font-bold text-slate-800 font-odia text-base">ଆଜିର ସଂକଳ୍ପ (Resolutions)</h3>
+                    <p className="text-[10px] text-slate-400">Syncs automatically in the browser storage</p>
+                  </div>
+                </div>
+
+                {/* Add Form */}
+                <form onSubmit={handleAddTask} className="flex gap-2 mb-4">
+                  <input
+                    type="text"
+                    value={newTaskText}
+                    onChange={(e) => setNewTaskText(e.target.value)}
+                    placeholder="ସଂକଳ୍ପ ଯୋଗ କରନ୍ତୁ (Add...)"
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-xs"
+                    maxLength={100}
+                  />
+                  <button
+                    type="submit"
+                    className="p-2.5 bg-amber-800 hover:bg-amber-950 text-white rounded-xl transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </form>
+
+                {/* Items list */}
+                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                  <AnimatePresence initial={false}>
+                    {tasks.map((task) => (
+                      <motion.div
+                        key={task.id}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className={`flex items-center justify-between p-2.5 rounded-xl border text-xs ${
+                          task.completed 
+                            ? "bg-slate-50 border-slate-100 text-slate-400 line-through decoration-slate-300" 
+                            : "bg-white border-slate-100 text-slate-700"
+                        }`}
+                      >
+                        <div 
+                          className="flex items-start gap-2 flex-1 cursor-pointer" 
+                          onClick={() => handleToggleTask(task.id)}
+                        >
+                          <div className={`mt-0.5 w-3.5 h-3.5 rounded-md border flex items-center justify-center transition-all ${
+                            task.completed 
+                              ? "bg-amber-700 border-amber-700 text-white" 
+                              : "border-slate-300"
+                          }`}>
+                            {task.completed && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                          </div>
+                          <span className="font-medium font-odia select-none break-all pr-1">
+                            {task.text}
+                          </span>
+                        </div>
+                        
+                        <button
+                          onClick={() => handleDeleteTask(task.id)}
+                          className="text-slate-300 hover:text-rose-600 p-1 rounded-md transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </motion.div>
+                    ))}
+                    
+                    {tasks.length === 0 && (
+                      <div className="text-center py-8 text-slate-400 text-xs border border-dashed border-slate-100 rounded-xl bg-slate-50/50">
+                        No goals added for today yet.
+                      </div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+
+              {tasks.length > 0 && (
+                <div className="pt-3 border-t border-slate-100 mt-4 flex justify-between items-center text-[9px] text-slate-400 font-semibold uppercase">
+                  <span>Completed: {tasks.filter(t => t.completed).length} / {tasks.length}</span>
+                  <button 
+                    onClick={() => setDeleteConfirm({ type: "tasks", title: "All Resolutions / Tasks" })}
+                    className="text-rose-500 hover:underline cursor-pointer"
+                  >
+                    Clear All (ସଫା କରନ୍ତୁ)
+                  </button>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* Local Heritage Info Segment */}
+        <section className="mt-8 p-6 bg-white rounded-3xl border border-amber-100/80 shadow-xs">
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles className="w-5 h-5 text-amber-700" />
+            <h3 className="font-bold text-slate-800 font-odia">ଓଡ଼ିଶା ସମ୍ପର୍କରେ (Odisha Heritage Spotlight)</h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs text-slate-600 leading-relaxed">
+            <div className="bg-amber-50/20 p-4 rounded-2xl border border-amber-100/30">
+              <h4 className="font-bold text-slate-800 font-odia text-sm mb-1">🏺 କଳା ଓ ସଂସ୍କୃତି (Art & Culture)</h4>
+              <p>
+                ଓଡ଼ିଶା ଏହାର ପଟ୍ଟଚିତ୍ର, ତାରକସି କାମ, ସମ୍ବଲପୁରୀ ହସ୍ତତନ୍ତ ଏବଂ ବିଶ୍ୱପ୍ରସିଦ୍ଧ ଓଡ଼ିଶୀ ନୃତ୍ୟ ପାଇଁ ସାରା ବିଶ୍ୱରେ ପ୍ରସିଦ୍ଧ । ଇତିହାସ ଓ ସୌନ୍ଦର୍ଯ୍ୟର ଅପୂର୍ବ ମିଳନ ଏଠାରେ ଦେଖିବାକୁ ମିଳେ ।
+              </p>
+            </div>
+            <div className="bg-amber-50/20 p-4 rounded-2xl border border-amber-100/30">
+              <h4 className="font-bold text-slate-800 font-odia text-sm mb-1">☸️ କୋଣାର୍କ ଚକ୍ର (Konark Wheel)</h4>
+              <p>
+                ୧୩ଶ ଶତାବ୍ଦୀର ସୂର୍ଯ୍ୟ ମନ୍ଦିର କୋଣାର୍କର ଚକ୍ର ଏକ ପ୍ରାକୃତିକ ସୂର୍ଯ୍ୟ ଘଣ୍ଟା ଭାବେ କାମ କରେ, ଯାହା ମିନିଟ୍ ସମୟକୁ ମଧ୍ୟ ସଠିକ୍ ଭାବେ ଗଣନା କରିପାରେ । ଏହା ଆମ ପୂର୍ବଜଙ୍କ ବିଜ୍ଞାନର ସଙ୍କେତ ।
+              </p>
+            </div>
+            <div className="bg-amber-50/20 p-4 rounded-2xl border border-amber-100/30">
+              <h4 className="font-bold text-slate-800 font-odia text-sm mb-1">🌴 ପ୍ରକୃତିର ବରଦାନ (Chilika Lake)</h4>
+              <p>
+                ଏସିଆର ସବୁଠାରୁ ବୃହତମ ଲୁଣିଆ ହ୍ରଦ ଚିଲିକା ହେଉଛି ଲକ୍ଷ ଲକ୍ଷ ପ୍ରବାସୀ ପକ୍ଷୀ ଏବଂ ବିରଳ ଇରାବତୀ ଡଲଫିନଙ୍କ ଆବାସସ୍ଥଳୀ । ଏହା ଓଡ଼ିଶାର ଜୈବ-ବିବିଧତାର ପ୍ରମୁଖ ଆକର୍ଷଣ ।
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* Footer */}
+        <footer className="mt-12 text-center text-[11px] text-slate-400">
+          <p>© 2026 Swagat App. Designed and crafted with love for Odisha.</p>
+          <p className="mt-1">ଭଲ କାମ କରନ୍ତୁ, ଆନନ୍ଦିତ ରୁହନ୍ତୁ । Stay safe, act kind.</p>
+        </footer>
+
+      </div>
+
+      {/* ADMIN CONTROL PANEL MODAL (PIN ACCESS: 543213) */}
+      <AnimatePresence>
+        {showAdminModal && (
+          <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl w-full max-w-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col border border-amber-100"
+            >
+              {/* Modal Header */}
+              <div className="bg-linear-to-r from-amber-900 to-amber-950 p-5 text-white flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <Lock className="w-5 h-5 text-amber-400" />
+                  <div>
+                    <h3 className="font-bold text-base font-odia">ପ୍ରଶାସନିକ କକ୍ଷ | Admin Dashboard Panel</h3>
+                    <p className="text-[10px] text-amber-300">Management center for songs, covers, advertisements & posters</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowAdminModal(false);
+                    setPinError("");
+                  }}
+                  className="p-1.5 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Modal Body Container */}
+              <div className="p-6 overflow-y-auto flex-1 bg-[#FAF9F5]">
+                
+                {/* LOGIN FORM (IF NOT AUTHENTICATED) */}
+                {!isAdmin ? (
+                  <div className="max-w-md mx-auto text-center py-8">
+                    <div className="h-14 w-14 rounded-full bg-amber-50 text-amber-800 flex items-center justify-center mx-auto mb-4 border border-amber-100">
+                      <Lock className="w-6 h-6" />
+                    </div>
+                    <h4 className="font-bold text-slate-800 text-lg mb-1 font-odia">ପ୍ରବେଶ ଅନୁମତି ଆବଶ୍ୟକ</h4>
+                    <p className="text-xs text-slate-500 mb-6">Enter the administrator PIN passcode to unlock media uploading features.</p>
+                    
+                    <form onSubmit={handleAdminLogin} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 text-left mb-1.5 uppercase tracking-wider">
+                          Admin PIN Code (ପାସକୋଡ୍)
+                        </label>
+                        <input
+                          type="password"
+                          value={adminPin}
+                          onChange={(e) => setAdminPin(e.target.value)}
+                          placeholder="••••••"
+                          className="w-full px-4 py-3 border border-slate-200 rounded-2xl text-center font-mono font-bold text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-600"
+                          maxLength={10}
+                        />
+                      </div>
+
+                      {pinError && (
+                        <p className="text-xs text-rose-600 font-semibold bg-rose-50 p-2 rounded-lg border border-rose-100">
+                          ⚠️ {pinError}
+                        </p>
+                      )}
+
+                      <button
+                        type="submit"
+                        className="w-full py-3 bg-amber-800 hover:bg-amber-950 text-white rounded-2xl font-bold text-sm transition-colors cursor-pointer shadow-sm shadow-amber-900/10"
+                      >
+                        Unlock Dashboard (ପ୍ରବେଶ କରନ୍ତୁ)
+                      </button>
+                    </form>
+                  </div>
+                ) : (
+                  
+                  /* REAL FULLY OPERATIONAL ADMIN DASHBOARD */
+                  <div className="space-y-8">
+                    
+                    {/* Welcome Notice */}
+                    <div className="bg-amber-50 p-4 rounded-2xl border border-amber-200/60 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">👑</span>
+                        <div>
+                          <p className="text-xs text-slate-500">Authenticated System Admin</p>
+                          <p className="font-bold text-slate-800 text-sm font-odia">ଆପଣ ସଫଳତାର ସହ ପ୍ରବେଶ କରିଛନ୍ତି (Access Granted)</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setIsAdmin(false)}
+                        className="flex items-center gap-1 text-xs font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
+                      >
+                        <LogOut className="w-3.5 h-3.5" /> Sign Out
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      
+                      {/* Section A: Upload New Song & Cover Photo */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+                        <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
+                          <Music className="w-4.5 h-4.5 text-amber-700" />
+                          <h4 className="font-bold text-slate-800 text-sm font-odia">ନୂଆ ଗୀତ ଓ ଫଟୋ ଅପଲୋଡ୍ (Song & Cover)</h4>
+                        </div>
+
+                        <form onSubmit={handleUploadSongSubmit} className="space-y-3">
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Song Title (ଗୀତର ଶୀର୍ଷକ) *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={songTitle}
+                              onChange={(e) => setSongTitle(e.target.value)}
+                              placeholder="e.g. ବନ୍ଦେ ଉତ୍କଳ ଜନନୀ"
+                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Artist Name (କଣ୍ଠଶିଳ୍ପୀ) *
+                            </label>
+                            <input
+                              type="text"
+                              value={songArtist}
+                              onChange={(e) => setSongArtist(e.target.value)}
+                              placeholder="e.g. Traditional Vocalist"
+                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Cover Photo Art (ଆଲବମ୍ ଫଟୋ) *
+                            </label>
+                            <input
+                              type="file"
+                              required
+                              accept="image/*"
+                              onChange={(e) => {
+                                if (e.target.files) setSongPhotoFile(e.target.files[0]);
+                              }}
+                              className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Song Audio File (ଗୀତ ଅଡିଓ ଫାଇଲ୍) *
+                            </label>
+                            <input
+                              type="file"
+                              required
+                              accept="audio/*"
+                              onChange={(e) => {
+                                if (e.target.files) setSongAudioFile(e.target.files[0]);
+                              }}
+                              className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
+                            />
+                          </div>
+
+                          {songErrorText && (
+                            <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">{songErrorText}</p>
+                          )}
+
+                          {songSuccess && (
+                            <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{songSuccess}</p>
+                          )}
+
+                          <button
+                            type="submit"
+                            disabled={songUploading}
+                            className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            {songUploading ? "Uploading files..." : "Save Song (ଗୀତ ସାଇତି ରଖନ୍ତୁ)"}
+                          </button>
+                        </form>
+                      </div>
+
+                      {/* Section B: Upload Advertisement Banner / Posters */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+                        <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
+                          <Megaphone className="w-4.5 h-4.5 text-amber-700" />
+                          <h4 className="font-bold text-slate-800 text-sm font-odia">ବିଜ୍ଞାପନ ଓ ପୋଷ୍ଟର ଯୋଡ଼ନ୍ତୁ (Poster / Ad Banner)</h4>
+                        </div>
+
+                        <form onSubmit={handleUploadAdSubmit} className="space-y-3">
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Poster Banner Title (ପୋଷ୍ଟର ଶୀର୍ଷକ) *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={adTitle}
+                              onChange={(e) => setAdTitle(e.target.value)}
+                              placeholder="e.g. ଓଡ଼ିଶାର କଳା ଉତ୍ସବ ୨୦୨୬"
+                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Redirect/Info Link (ୱେବସାଇଟ୍ ଲିଙ୍କ - ଇଚ୍ଛାଧୀନ)
+                            </label>
+                            <input
+                              type="url"
+                              value={adLink}
+                              onChange={(e) => setAdLink(e.target.value)}
+                              placeholder="e.g. https://example.com"
+                              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">
+                              Banner Image Photo (ବ୍ୟାନର ଫଟୋ) *
+                            </label>
+                            <input
+                              type="file"
+                              required
+                              accept="image/*"
+                              onChange={(e) => {
+                                if (e.target.files) setAdImageFile(e.target.files[0]);
+                              }}
+                              className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
+                            />
+                          </div>
+
+                          {adErrorText && (
+                            <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">{adErrorText}</p>
+                          )}
+
+                          {adSuccess && (
+                            <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{adSuccess}</p>
+                          )}
+
+                          <button
+                            type="submit"
+                            disabled={adUploading}
+                            className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            {adUploading ? "Saving poster..." : "Add Advertisement Poster"}
+                          </button>
+                        </form>
+                      </div>
+
+                    </div>
+
+                    {/* Section C: List and Delete Uploaded Items */}
+                    <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+                      <div className="border-b border-slate-100 pb-2.5">
+                        <h4 className="font-bold text-slate-800 text-sm font-odia">ଅପଲୋଡ୍ ସୂଚୀ ପରିଚାଳନା (Manage Songs & Media)</h4>
+                        <p className="text-[10px] text-slate-400">View and permanently delete songs, covers, advertisements or posters</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Songs list */}
+                        <div className="space-y-2">
+                          <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Songs & Melodies ({allSongs.length})</h5>
+                          <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                            {allSongs.map(song => (
+                              <div key={song.id} className="flex items-center justify-between p-2 bg-[#FAF9F5] border border-slate-100 rounded-xl text-xs">
+                                <div className="flex items-center gap-2 overflow-hidden mr-2">
+                                  <img src={song.photoUrl} alt="" className="w-8 h-8 rounded-md object-cover" referrerPolicy="no-referrer" />
+                                  <div className="truncate">
+                                    <p className="font-bold text-slate-800 truncate font-odia">{song.title}</p>
+                                    <p className="text-[10px] text-slate-400 truncate">
+                                      {song.artist} {!song.isCustom && <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm text-[8px] font-bold">Default</span>}
+                                    </p>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => triggerDeleteSong(song.id, song.title)}
+                                  className="p-1 text-rose-500 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
+                                  title="Delete Song"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
+                            {allSongs.length === 0 && (
+                              <p className="text-[11px] text-slate-400 italic">No songs available.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Ads list */}
+                        <div className="space-y-2">
+                          <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Advertisement Posters ({allAds.length})</h5>
+                          <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                            {allAds.map(ad => (
+                              <div key={ad.id} className="flex items-center justify-between p-2 bg-[#FAF9F5] border border-slate-100 rounded-xl text-xs">
+                                <div className="flex items-center gap-2 overflow-hidden mr-2">
+                                  <img src={ad.imageUrl} alt="" className="w-12 h-8 rounded-md object-cover" referrerPolicy="no-referrer" />
+                                  <div className="truncate">
+                                    <p className="font-bold text-slate-800 truncate font-odia">{ad.title}</p>
+                                    {!ad.isCustom && <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm text-[8px] font-bold">Default</span>}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => triggerDeleteAd(ad.id, ad.title)}
+                                  className="p-1 text-rose-500 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
+                                  title="Delete Poster"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
+                            {allAds.length === 0 && (
+                              <p className="text-[11px] text-slate-400 italic">No posters available.</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+
+                  </div>
+                )}
+
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* PERSISTENT BOTTOM MUSIC PLAYER BAR */}
+      <AnimatePresence>
+        {currentSong && (
+          <motion.div
+            initial={{ y: 80, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 80, opacity: 0 }}
+            className="fixed bottom-0 left-0 right-0 bg-linear-to-b from-slate-900 to-black text-white border-t border-slate-800 p-4 shadow-2xl z-40"
+          >
+            <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+              
+              {/* Left Side: Cover photo & meta */}
+              <div className="flex items-center gap-3.5 w-full md:w-[30%]">
+                <div className="h-14 w-14 rounded-xl overflow-hidden shadow-md flex-shrink-0 relative group">
+                  <img 
+                    src={currentSong.photoUrl} 
+                    alt={currentSong.title} 
+                    className="h-full w-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                  {/* Small play status overlay */}
+                  {isPlaying && (
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                      <div className="flex gap-0.5 items-end h-3">
+                        <span className="w-0.5 bg-amber-400 h-full rounded-xs animate-bounce" style={{ animationDelay: '0.1s' }} />
+                        <span className="w-0.5 bg-amber-400 h-1/2 rounded-xs animate-bounce" style={{ animationDelay: '0.3s' }} />
+                        <span className="w-0.5 bg-amber-400 h-2/3 rounded-xs animate-bounce" style={{ animationDelay: '0.2s' }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="truncate text-left">
+                  <h5 className="font-bold text-xs sm:text-sm text-white font-odia truncate">
+                    {currentSong.title}
+                  </h5>
+                  <p className="text-[10px] sm:text-xs text-amber-400 truncate mt-0.5">
+                    {currentSong.artist}
+                  </p>
+                </div>
+              </div>
+
+              {/* Center Side: Media controls & slider progress timeline */}
+              <div className="flex flex-col items-center gap-1.5 w-full md:w-[45%]">
+                <div className="flex items-center gap-5">
+                  <button 
+                    onClick={handlePrevTrack}
+                    className="p-1 hover:text-amber-400 text-slate-300 transition-colors cursor-pointer"
+                    title="Previous"
+                  >
+                    <ChevronLeft className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+
+                  <button
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    className="h-9 w-9 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center transition-transform hover:scale-105 cursor-pointer shadow-md"
+                  >
+                    {isPlaying ? <Pause className="w-4 h-4 fill-slate-950 text-slate-950" /> : <Play className="w-4 h-4 fill-slate-950 text-slate-950 translate-x-0.5" />}
+                  </button>
+
+                  <button 
+                    onClick={handleNextTrack}
+                    className="p-1 hover:text-amber-400 text-slate-300 transition-colors cursor-pointer"
+                    title="Next"
+                  >
+                    <ChevronRight className="w-5 h-5 stroke-[2.5]" />
+                  </button>
+                </div>
+
+                {/* Progress bar timeline */}
+                <div className="flex items-center gap-2.5 w-full text-[10px] font-mono text-slate-400">
+                  <span>{formatTimeSeconds(currentTime)}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max={duration || 100}
+                    value={currentTime}
+                    onChange={(e) => {
+                      const newTime = parseFloat(e.target.value);
+                      setCurrentTime(newTime);
+                      if (audioRef.current) audioRef.current.currentTime = newTime;
+                    }}
+                    className="flex-1 accent-amber-500 h-1 rounded-lg cursor-pointer bg-slate-700"
+                  />
+                  <span>{formatTimeSeconds(duration)}</span>
+                </div>
+              </div>
+
+              {/* Right Side: Volume & close button */}
+              <div className="flex items-center justify-end gap-3 w-full md:w-[25%]">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setIsMuted(!isMuted)}
+                    className="p-1 hover:text-amber-400 text-slate-300 transition-colors cursor-pointer"
+                  >
+                    {isMuted || volume === 0 ? <VolumeX className="w-4.5 h-4.5" /> : <Volume2 className="w-4.5 h-4.5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => {
+                      setVolume(parseFloat(e.target.value));
+                      setIsMuted(false);
+                    }}
+                    className="w-18 md:w-20 accent-amber-500 h-1 bg-slate-700 rounded-lg cursor-pointer"
+                  />
+                </div>
+
+                <div className="w-px h-6 bg-slate-800 hidden md:block mx-1" />
+
+                <button
+                  onClick={() => {
+                    setIsPlaying(false);
+                    setCurrentSong(null);
+                  }}
+                  className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title="Close player"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* CUSTOM NON-BLOCKING DELETION CONFIRMATION DIALOG */}
+      <AnimatePresence>
+        {deleteConfirm && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[60]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden border border-amber-100 p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3 text-amber-800">
+                <span className="p-2 bg-amber-50 rounded-xl text-amber-700">
+                  <Trash2 className="w-6 h-6 text-rose-600" />
+                </span>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-base font-odia">ନିଶ୍ଚିତ କରନ୍ତୁ (Confirm Deletion)</h3>
+                  <p className="text-xs text-slate-400">Action cannot be undone</p>
+                </div>
+              </div>
+
+              <div className="text-sm text-slate-600 leading-relaxed font-medium font-odia bg-slate-50 p-3 rounded-xl border border-slate-100">
+                ଆପଣ କଣ ନିଶ୍ଚିତ ଏହାକୁ ଡିଲିଟ୍ କରିବାକୁ ଚାହାଁନ୍ତି? <br />
+                Are you sure you want to delete <strong className="text-slate-800">"{deleteConfirm.title}"</strong>?
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-all cursor-pointer"
+                >
+                  ବାତିଲ୍ କରନ୍ତୁ (Cancel)
+                </button>
+                <button
+                  onClick={executeDelete}
+                  className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-all cursor-pointer shadow-sm shadow-rose-900/15"
+                >
+                  ହଁ, ଡିଲିଟ୍ କରନ୍ତୁ (Yes, Delete)
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}

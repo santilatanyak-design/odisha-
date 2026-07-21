@@ -1,0 +1,6 @@
+{
+  "name": "Swagat - Odia Welcome App",
+  "description": "ଏକ ଆକର୍ଷଣୀୟ ଓଡ଼ିଆ ସ୍ୱାଗତ ଆପ୍ଲିକେସନ୍ | A beautiful, interactive Odia greeting card, dynamic calendar, and local dashboard built to welcome you in style.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
