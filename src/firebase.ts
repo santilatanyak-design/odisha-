@@ -1,8 +1,8 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, setLogLevel } from "firebase/firestore";
 
-// Suppress non-fatal Firestore internal SDK debug logs (like BloomFilter fallback warnings)
-setLogLevel("error");
+// Suppress internal Firestore SDK verbose retry & quota warning logs in console
+setLogLevel("silent");
 
 const firebaseConfig = {
   projectId: "elemental-xyston-rgtt6",

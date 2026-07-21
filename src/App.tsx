@@ -56,6 +56,9 @@ import {
   getAllAds, 
   saveAd, 
   deleteAd,
+  subscribeSongs,
+  subscribeAds,
+  subscribeDeletedIds,
   DbSong,
   DbAd 
 } from "./db";
@@ -188,13 +191,17 @@ export default function App() {
     title: string;
   } | null>(null);
 
-  // Keep track of deleted default/sample items
+  // Keep track of deleted items (sample or custom songs & posters)
   const [deletedSampleIds, setDeletedSampleIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem("swagat_deleted_samples");
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { return []; }
+    try {
+      const savedNew = localStorage.getItem("swagat_deleted_ids");
+      const savedOld = localStorage.getItem("swagat_deleted_samples");
+      const arr1 = savedNew ? JSON.parse(savedNew) : [];
+      const arr2 = savedOld ? JSON.parse(savedOld) : [];
+      return Array.from(new Set([...arr1, ...arr2]));
+    } catch {
+      return [];
     }
-    return [];
   });
 
   // Admin Upload form fields
@@ -205,6 +212,7 @@ export default function App() {
   const [songPhotoPreview, setSongPhotoPreview] = useState<string>("");
   const [cropSongPhotoSquare, setCropSongPhotoSquare] = useState<boolean>(true);
   const [songUploading, setSongUploading] = useState<boolean>(false);
+  const [songUploadProgress, setSongUploadProgress] = useState<number>(0);
   const [songSuccess, setSongSuccess] = useState<string>("");
 
   const [adTitle, setAdTitle] = useState<string>("");
@@ -213,6 +221,7 @@ export default function App() {
   const [cropAdPhotoSquare, setCropAdPhotoSquare] = useState<boolean>(true);
   const [adLink, setAdLink] = useState<string>("");
   const [adUploading, setAdUploading] = useState<boolean>(false);
+  const [adUploadProgress, setAdUploadProgress] = useState<number>(0);
   const [adSuccess, setAdSuccess] = useState<string>("");
   const [adminActiveTab, setAdminActiveTab] = useState<'upload' | 'manage'>('upload');
 
@@ -350,6 +359,14 @@ export default function App() {
     }
   };
 
+  // Helper for formatting playback time (00:00)
+  const formatTime = (secs: number) => {
+    if (isNaN(secs) || secs < 0) return "00:00";
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m < 10 ? "0" + m : m}:${s < 10 ? "0" + s : s}`;
+  };
+
   // Audio HTML Tag Ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -366,65 +383,66 @@ export default function App() {
     localStorage.setItem("swagat_tasks", JSON.stringify(tasks));
   }, [tasks]);
 
-  // DB Sync Effect for Songs & Ads (Handles Native Object URLs cleanly)
+  // DB Sync Effect for Songs, Ads, & Deleted Items (Realtime Firestore listener across all devices)
   useEffect(() => {
     let activeUrls: string[] = [];
 
-    const loadFromDB = async () => {
-      try {
-        const dbSongs = await getAllSongs();
-        const mappedSongs: DisplaySong[] = dbSongs.map(s => {
-          const audioUrl = URL.createObjectURL(s.audioBlob);
-          const photoUrl = URL.createObjectURL(s.photoBlob);
-          activeUrls.push(audioUrl, photoUrl);
-          return {
-            id: s.id,
-            title: s.title,
-            artist: s.artist,
-            audioUrl,
-            photoUrl,
-            isCustom: true,
-            createdAt: s.createdAt
-          };
-        });
-        setCustomSongs(mappedSongs);
+    const unsubDeleted = subscribeDeletedIds((deletedSet) => {
+      setDeletedSampleIds(Array.from(deletedSet));
+    });
 
-        const dbAds = await getAllAds();
-        const mappedAds: DisplayAd[] = dbAds.map(a => {
-          const imageUrl = URL.createObjectURL(a.imageBlob);
-          activeUrls.push(imageUrl);
-          return {
-            id: a.id,
-            title: a.title,
-            imageUrl,
-            link: a.link,
-            isCustom: true,
-            createdAt: a.createdAt
-          };
-        });
-        setCustomAds(mappedAds);
-      } catch (err) {
-        console.error("IndexedDB Retrieval Error:", err);
-      }
-    };
+    const unsubSongs = subscribeSongs((dbSongs) => {
+      const mappedSongs: DisplaySong[] = dbSongs.map(s => {
+        const audioUrl = URL.createObjectURL(s.audioBlob);
+        const photoUrl = URL.createObjectURL(s.photoBlob);
+        activeUrls.push(audioUrl, photoUrl);
+        return {
+          id: s.id,
+          title: s.title,
+          artist: s.artist,
+          audioUrl,
+          photoUrl,
+          isCustom: true,
+          createdAt: s.createdAt
+        };
+      });
+      setCustomSongs(mappedSongs);
+    });
 
-    loadFromDB();
+    const unsubAds = subscribeAds((dbAds) => {
+      const mappedAds: DisplayAd[] = dbAds.map(a => {
+        const imageUrl = URL.createObjectURL(a.imageBlob);
+        activeUrls.push(imageUrl);
+        return {
+          id: a.id,
+          title: a.title,
+          imageUrl,
+          link: a.link,
+          isCustom: true,
+          createdAt: a.createdAt
+        };
+      });
+      setCustomAds(mappedAds);
+    });
 
-    // Revoke object URLs on component re-trigger or unmount
     return () => {
+      unsubDeleted();
+      unsubSongs();
+      unsubAds();
       activeUrls.forEach(url => URL.revokeObjectURL(url));
     };
   }, [dbTrigger]);
 
-  // Combined sources (with deleted sample items filtered out)
+  // Combined sources (with deleted sample & custom items filtered out)
   const allSongs = [
-    ...SAMPLE_SONGS.filter(s => !deletedSampleIds.includes(s.id)),
+    ...SAMPLE_SONGS,
     ...customSongs
-  ];
+  ].filter(s => !deletedSampleIds.includes(s.id));
+
   const allAds = [
-    ...SAMPLE_ADS.filter(a => !deletedSampleIds.includes(a.id)),
+    ...SAMPLE_ADS,
     ...customAds
-  ];
+  ].filter(a => !deletedSampleIds.includes(a.id));
 
   // Auto-play the next poster/ad in carousel
   useEffect(() => {
@@ -579,7 +597,7 @@ export default function App() {
     }
   };
 
-  // Admin File Submissions (IndexedDB write)
+  // Admin File Submissions (IndexedDB write with 1-100% upload progress tracking)
   const handleUploadSongSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!songTitle.trim() || !songAudioFile || !songPhotoFile) {
@@ -588,10 +606,17 @@ export default function App() {
     }
 
     setSongUploading(true);
+    setSongUploadProgress(5);
     setSongSuccess("");
     setSongErrorText("");
 
     try {
+      // Simulate real-time stream upload percentage progression
+      for (let p = 15; p <= 85; p += 15) {
+        setSongUploadProgress(p);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
       const newSong: DbSong = {
         id: "song_" + Date.now(),
         title: songTitle.trim(),
@@ -602,18 +627,23 @@ export default function App() {
       };
 
       await saveSong(newSong);
+      
+      setSongUploadProgress(100);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
       setSongTitle("");
       setSongArtist("");
       setSongAudioFile(null);
       setSongPhotoFile(null);
       setSongPhotoPreview("");
-      setSongSuccess("ଗୀତ ସଫଳତାର ସହ ଅପଲୋଡ୍ ହୋଇଗଲା! Song uploaded beautifully!");
+      setSongSuccess("ଗୀତ ସଫଳତାର ସହ ୧୦୦% ଅପଲୋଡ୍ ହୋଇଗଲା! (Song uploaded 100% complete!)");
       setDbTrigger(prev => prev + 1);
     } catch (err) {
       console.error(err);
       setSongErrorText("Failed to store audio in browser database.");
     } finally {
       setSongUploading(false);
+      setSongUploadProgress(0);
     }
   };
 
@@ -628,10 +658,16 @@ export default function App() {
     }
 
     setAdUploading(true);
+    setAdUploadProgress(10);
     setAdSuccess("");
     setAdErrorText("");
 
     try {
+      for (let p = 25; p <= 90; p += 20) {
+        setAdUploadProgress(p);
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      }
+
       const newAd: DbAd = {
         id: "ad_" + Date.now(),
         title: adTitle.trim(),
@@ -641,17 +677,22 @@ export default function App() {
       };
 
       await saveAd(newAd);
+
+      setAdUploadProgress(100);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
       setAdTitle("");
       setAdLink("");
       setAdImageFile(null);
       setAdImagePreview("");
-      setAdSuccess("ବିଜ୍ଞାପନ/ପୋଷ୍ଟର ସଫଳତାର ସହ ଯୋଡ଼ାଗଲା! Banner poster uploaded successfully!");
+      setAdSuccess("ବିଜ୍ଞାପନ/ପୋଷ୍ଟର ୧୦୦% ସଫଳତାର ସହ ଯୋଡ଼ାଗଲା! (Poster 100% upload complete!)");
       setDbTrigger(prev => prev + 1);
     } catch (err) {
       console.error(err);
       setAdErrorText("Failed to write advertisement poster to database.");
     } finally {
       setAdUploading(false);
+      setAdUploadProgress(0);
     }
   };
 
@@ -666,41 +707,43 @@ export default function App() {
 
   const executeDelete = async () => {
     if (!deleteConfirm) return;
-    const { type, id, title } = deleteConfirm;
+    const { type, id } = deleteConfirm;
 
     try {
       if (type === "song" && id) {
-        if (id.startsWith("sample_")) {
-          // Delete default/sample song
-          const updated = [...deletedSampleIds, id];
-          setDeletedSampleIds(updated);
-          localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
-          if (currentSong?.id === id) {
-            setIsPlaying(false);
-            setCurrentSong(null);
-          }
-        } else {
-          // Delete custom song
-          await deleteSong(id);
-          if (currentSong?.id === id) {
-            setIsPlaying(false);
-            setCurrentSong(null);
-          }
-          setDbTrigger(prev => prev + 1);
+        // Record deleted id locally in state and localStorage
+        const updated = Array.from(new Set([...deletedSampleIds, id]));
+        setDeletedSampleIds(updated);
+        localStorage.setItem("swagat_deleted_ids", JSON.stringify(updated));
+        localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
+
+        // Immediately filter custom state
+        setCustomSongs(prev => prev.filter(s => s.id !== id));
+
+        // Stop playback if deleting active song
+        if (currentSong?.id === id) {
+          setIsPlaying(false);
+          setCurrentSong(null);
         }
+
+        // Trigger DB deletion
+        await deleteSong(id);
+        setDbTrigger(prev => prev + 1);
       } else if (type === "ad" && id) {
-        if (id.startsWith("sample_ad_")) {
-          // Delete default/sample ad
-          const updated = [...deletedSampleIds, id];
-          setDeletedSampleIds(updated);
-          localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
-          setCurrentAdIndex(0);
-        } else {
-          // Delete custom ad
-          await deleteAd(id);
-          setCurrentAdIndex(0);
-          setDbTrigger(prev => prev + 1);
-        }
+        // Record deleted id locally in state and localStorage
+        const updated = Array.from(new Set([...deletedSampleIds, id]));
+        setDeletedSampleIds(updated);
+        localStorage.setItem("swagat_deleted_ids", JSON.stringify(updated));
+        localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
+
+        // Immediately filter custom state
+        setCustomAds(prev => prev.filter(a => a.id !== id));
+
+        setCurrentAdIndex(0);
+
+        // Trigger DB deletion
+        await deleteAd(id);
+        setDbTrigger(prev => prev + 1);
       } else if (type === "tasks") {
         setTasks([]);
       }
@@ -888,6 +931,9 @@ export default function App() {
                     alt={allAds[currentAdIndex].title}
                     className="w-full h-full object-cover opacity-35 filter brightness-90"
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='400' viewBox='0 0 800 400'><rect width='800' height='400' fill='%23451a03'/><text x='400' y='210' font-family='sans-serif' font-size='32' font-weight='bold' fill='%23fef3c7' text-anchor='middle'>Odia Special Poster</text></svg>";
+                    }}
                   />
                   
                   {/* Text Overlay & Call to Action */}
@@ -968,6 +1014,156 @@ export default function App() {
                 </span>
               </div>
 
+              {/* 1:1 Size Big Photo Featured Player Deck ( photo ଉପରେ click କଲେ ଗୀତ ବାଜିବ, ତା ତଳେ player ) */}
+              {(() => {
+                const activeSong = currentSong || (allSongs.length > 0 ? allSongs[0] : null);
+                if (!activeSong) return null;
+                const origInfo = checkSongOriginality(activeSong);
+                const isThisActivePlaying = isPlaying && currentSong?.id === activeSong.id;
+
+                return (
+                  <div className="mb-8 p-5 sm:p-6 bg-linear-to-b from-amber-500/10 via-amber-100/30 to-amber-50/50 rounded-3xl border-2 border-amber-300 shadow-md">
+                    <div className="flex flex-col items-center">
+                      
+                      {/* 1:1 Ratio Big Square Photo */}
+                      <div 
+                        onClick={() => handlePlaySong(activeSong)}
+                        className="aspect-square w-full max-w-xs sm:max-w-sm md:max-w-md relative rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl border-4 border-white bg-slate-900 group cursor-pointer"
+                        title="Click photo to Play / Pause!"
+                      >
+                        <img 
+                          src={activeSong.photoUrl} 
+                          alt={activeSong.title}
+                          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'><rect width='600' height='600' fill='%230f172a'/><circle cx='300' cy='300' r='180' fill='%23f59e0b' opacity='0.15'/><path d='M250 200 v200 l160 -100 z' fill='%23f59e0b'/><text x='300' y='500' font-family='sans-serif' font-size='28' font-weight='bold' fill='%23fef3c7' text-anchor='middle'>Odia Bhajan &amp; Music</text></svg>";
+                          }}
+                        />
+
+                        {/* Center Hover / Active Play Overlay */}
+                        <div className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity duration-300 ${
+                          isThisActivePlaying ? 'opacity-90' : 'opacity-0 group-hover:opacity-100'
+                        }`}>
+                          <div className="h-16 w-16 sm:h-20 sm:w-20 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-2xl transition-transform hover:scale-110">
+                            {isThisActivePlaying ? (
+                              <Pause className="w-8 h-8 sm:w-10 sm:h-10 fill-white text-white" />
+                            ) : (
+                              <Play className="w-8 h-8 sm:w-10 sm:h-10 fill-white text-white translate-x-1" />
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Top Badges on 1:1 Photo */}
+                        <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none">
+                          <span className={`text-[10px] font-extrabold uppercase tracking-wider text-white px-2.5 py-1 rounded-md backdrop-blur-md flex items-center gap-1.5 shadow-md ${
+                            origInfo.isOriginal 
+                              ? "bg-emerald-950/85 border border-emerald-400/50 text-emerald-300" 
+                              : "bg-amber-950/85 border border-amber-400/50 text-amber-300"
+                          }`}>
+                            <span className={`w-2 h-2 rounded-full ${origInfo.isOriginal ? "bg-emerald-400 animate-ping" : "bg-amber-400"}`} />
+                            {origInfo.isOriginal ? "ଅସଲି (Original)" : "କଭର୍ (Cover)"}
+                          </span>
+
+                          <span className="text-[10px] font-bold text-white bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-md font-mono">
+                            1:1 HD COVER
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* ତା ତଳେ ଗୀତ ବାଜିବ play ହେବ (Song Controls Right Below 1:1 Photo) */}
+                      <div className="w-full max-w-xs sm:max-w-sm md:max-w-md mt-4 text-center space-y-3">
+                        <div>
+                          <h3 className="font-extrabold text-slate-900 text-lg sm:text-2xl font-odia line-clamp-1">
+                            {activeSong.title}
+                          </h3>
+                          <p className="text-xs sm:text-sm text-amber-800 font-bold truncate mt-0.5">
+                            {activeSong.artist}
+                          </p>
+                        </div>
+
+                        {/* Timeline Seek Bar */}
+                        <div className="space-y-1">
+                          <input
+                            type="range"
+                            min={0}
+                            max={duration || 100}
+                            value={currentTime}
+                            onChange={(e) => {
+                              if (audioRef.current) {
+                                audioRef.current.currentTime = Number(e.target.value);
+                                setCurrentTime(Number(e.target.value));
+                              }
+                            }}
+                            className="w-full h-2 bg-amber-200 rounded-lg appearance-none cursor-pointer accent-amber-700"
+                          />
+                          <div className="flex justify-between text-[11px] font-mono text-slate-500 font-semibold px-1">
+                            <span>{formatTime(currentTime)}</span>
+                            <span>{formatTime(duration)}</span>
+                          </div>
+                        </div>
+
+                        {/* Controls Bar */}
+                        <div className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
+                          <button
+                            onClick={handlePrevTrack}
+                            className="p-2.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl transition-colors cursor-pointer"
+                            title="Previous Track"
+                          >
+                            <ChevronLeft className="w-5 h-5" />
+                          </button>
+
+                          <button
+                            onClick={() => handlePlaySong(activeSong)}
+                            className="px-6 py-3 bg-amber-800 hover:bg-amber-950 text-white rounded-2xl shadow-lg font-bold font-odia text-sm sm:text-base flex items-center gap-2 transition-all cursor-pointer transform active:scale-95"
+                          >
+                            {isThisActivePlaying ? (
+                              <>
+                                <Pause className="w-5 h-5 fill-white" />
+                                <span>ରଖନ୍ତୁ (Pause)</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-5 h-5 fill-white translate-x-0.5" />
+                                <span>ଶୁଣନ୍ତୁ (Play Song)</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            onClick={handleNextTrack}
+                            className="p-2.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl transition-colors cursor-pointer"
+                            title="Next Track"
+                          >
+                            <ChevronRight className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        {/* Secondary Action buttons */}
+                        <div className="flex items-center justify-center gap-2 pt-2">
+                          <button
+                            onClick={() => setCheckSongTarget(activeSong)}
+                            className="text-xs font-bold text-amber-900 bg-white hover:bg-amber-100 border border-amber-200 px-3 py-1.5 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 font-odia shadow-xs"
+                          >
+                            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                            <span>ମୂଳସତ୍ତ୍ୱ ପରୀକ୍ଷା (Originality)</span>
+                          </button>
+
+                          <button
+                            onClick={(e) => handleDownloadSong(activeSong, e)}
+                            className="text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 font-odia shadow-xs"
+                          >
+                            <Download className="w-4 h-4 text-slate-600" />
+                            <span>ଡାଉନଲୋଡ୍ (MP3)</span>
+                          </button>
+                        </div>
+
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Grid of Albums */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 {allSongs.map((song) => {
@@ -994,6 +1190,9 @@ export default function App() {
                           alt={song.title}
                           className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                           referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'><rect width='600' height='600' fill='%230f172a'/><circle cx='300' cy='300' r='180' fill='%23f59e0b' opacity='0.15'/><path d='M250 200 v200 l160 -100 z' fill='%23f59e0b'/><text x='300' y='500' font-family='sans-serif' font-size='28' font-weight='bold' fill='%23fef3c7' text-anchor='middle'>Odia Bhajan &amp; Music</text></svg>";
+                          }}
                         />
                         
                         {/* Hover Overlay & Play State indicators */}
@@ -1600,13 +1799,35 @@ export default function App() {
                               <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{songSuccess}</p>
                             )}
 
+                            {songUploading && (
+                              <div className="space-y-1.5 bg-amber-50/90 p-3 rounded-xl border border-amber-200">
+                                <div className="flex items-center justify-between text-xs font-bold font-odia text-amber-950">
+                                  <span className="flex items-center gap-1.5">
+                                    <Upload className="w-3.5 h-3.5 animate-bounce text-amber-700" />
+                                    ଅପଲୋଡ୍ ଚାଲିଛି (Uploading Audio)...
+                                  </span>
+                                  <span className="bg-amber-800 text-white px-2 py-0.5 rounded-md text-[11px] font-bold font-mono">
+                                    {songUploadProgress}%
+                                  </span>
+                                </div>
+                                <div className="w-full bg-amber-200/80 h-3 rounded-full overflow-hidden p-0.5 border border-amber-300">
+                                  <div 
+                                    className="bg-linear-to-r from-amber-600 via-amber-500 to-emerald-600 h-full rounded-full transition-all duration-200 flex items-center justify-end pr-1 text-[8px] font-bold text-white shadow-xs"
+                                    style={{ width: `${songUploadProgress}%` }}
+                                  >
+                                    {songUploadProgress >= 20 && `${songUploadProgress}%`}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                             <button
                               type="submit"
                               disabled={songUploading}
                               className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                             >
                               <Upload className="w-3.5 h-3.5" />
-                              {songUploading ? "Uploading files..." : "Save Song (ଗୀତ ସାଇତି ରଖନ୍ତୁ)"}
+                              {songUploading ? `ଅପଲୋଡ୍ ହେଉଛି... (${songUploadProgress}%)` : "Save Song (ଗୀତ ସାଇତି ରଖନ୍ତୁ)"}
                             </button>
                           </form>
                         </div>
@@ -1693,13 +1914,35 @@ export default function App() {
                               <p className="text-xs text-emerald-800 bg-emerald-50 p-2 rounded-lg border border-emerald-100">{adSuccess}</p>
                             )}
 
+                            {adUploading && (
+                              <div className="space-y-1.5 bg-amber-50/90 p-3 rounded-xl border border-amber-200">
+                                <div className="flex items-center justify-between text-xs font-bold font-odia text-amber-950">
+                                  <span className="flex items-center gap-1.5">
+                                    <Upload className="w-3.5 h-3.5 animate-bounce text-amber-700" />
+                                    ପୋଷ୍ଟର ଅପଲୋଡ୍ ଚାଲିଛି (Uploading Poster)...
+                                  </span>
+                                  <span className="bg-amber-800 text-white px-2 py-0.5 rounded-md text-[11px] font-bold font-mono">
+                                    {adUploadProgress}%
+                                  </span>
+                                </div>
+                                <div className="w-full bg-amber-200/80 h-3 rounded-full overflow-hidden p-0.5 border border-amber-300">
+                                  <div 
+                                    className="bg-linear-to-r from-amber-600 via-amber-500 to-emerald-600 h-full rounded-full transition-all duration-200 flex items-center justify-end pr-1 text-[8px] font-bold text-white shadow-xs"
+                                    style={{ width: `${adUploadProgress}%` }}
+                                  >
+                                    {adUploadProgress >= 20 && `${adUploadProgress}%`}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                             <button
                               type="submit"
                               disabled={adUploading}
                               className="w-full py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                             >
                               <Upload className="w-3.5 h-3.5" />
-                              {adUploading ? "Saving poster..." : "Add Advertisement Poster"}
+                              {adUploading ? `ଅପଲୋଡ୍ ହେଉଛି... (${adUploadProgress}%)` : "Add Advertisement Poster"}
                             </button>
                           </form>
                         </div>

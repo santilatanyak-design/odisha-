@@ -10,7 +10,8 @@ import {
   setDoc, 
   getDoc, 
   getDocs, 
-  deleteDoc 
+  deleteDoc,
+  onSnapshot
 } from "firebase/firestore";
 
 export interface DbSong {
@@ -32,9 +33,108 @@ export interface DbAd {
 
 const DB_NAME = "SwagatAppDB";
 const DB_VERSION = 1;
-const CHUNK_SIZE = 800000; // 800KB characters
+const CHUNK_SIZE = 750000; // 750KB characters per chunk
 
-// --- Helper Functions to Convert Blob <-> Base64 ---
+const DEFAULT_COVER_SVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'><rect width='600' height='600' fill='%230f172a'/><circle cx='300' cy='300' r='180' fill='%23f59e0b' opacity='0.15'/><path d='M250 200 v200 l160 -100 z' fill='%23f59e0b'/><text x='300' y='500' font-family='sans-serif' font-size='28' font-weight='bold' fill='%23fef3c7' text-anchor='middle'>Odia Bhajan &amp; Music</text></svg>";
+
+// --- Helper Functions to Compress and Convert Images <-> DataURL <-> Base64 ---
+
+export function compressImageToMaxDataUrl(blob: Blob, maxDim = 800, quality = 0.82): Promise<string> {
+  return new Promise((resolve) => {
+    if (!blob || blob.size === 0) {
+      resolve(DEFAULT_COVER_SVG);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const src = e.target?.result as string;
+      if (!src) {
+        resolve(DEFAULT_COVER_SVG);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+
+        // Scale down to maxDim (e.g. 800x800 max)
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(src);
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        // Produces clean JPEG Data URL (~40KB - 90KB) well under Firestore 1MB doc limit
+        const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
+        resolve(compressedDataUrl);
+      };
+      img.onerror = () => resolve(src || DEFAULT_COVER_SVG);
+      img.src = src;
+    };
+    reader.onerror = () => resolve(DEFAULT_COVER_SVG);
+    reader.readAsDataURL(blob);
+  });
+}
+
+export function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+export function dataUrlToBlob(dataUrl: string): Blob {
+  try {
+    if (!dataUrl || typeof dataUrl !== "string") {
+      return new Blob([], { type: "image/jpeg" });
+    }
+
+    if (!dataUrl.startsWith("data:")) {
+      return base64ToBlob(dataUrl, "image/jpeg");
+    }
+
+    const commaIndex = dataUrl.indexOf(",");
+    if (commaIndex === -1) {
+      return new Blob([], { type: "image/jpeg" });
+    }
+
+    const header = dataUrl.substring(0, commaIndex);
+    const rawData = dataUrl.substring(commaIndex + 1);
+    const mimeMatch = header.match(/^data:(.*?)(;base64)?$/);
+    const mime = mimeMatch?.[1] || "image/jpeg";
+    const isBase64 = header.includes(";base64");
+
+    if (isBase64) {
+      return base64ToBlob(rawData, mime);
+    } else {
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(rawData);
+      } catch {
+        decoded = rawData;
+      }
+      return new Blob([decoded], { type: mime });
+    }
+  } catch (err) {
+    return new Blob([], { type: "image/jpeg" });
+  }
+}
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -54,13 +154,31 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteCharacters = atob(base64);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  try {
+    if (!base64 || typeof base64 !== "string") {
+      return new Blob([], { type: mimeType });
+    }
+    let cleaned = base64.replace(/\s/g, "");
+    while (cleaned.length % 4 !== 0) {
+      cleaned += "=";
+    }
+
+    const byteCharacters = atob(cleaned);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: mimeType });
+  } catch (err) {
+    try {
+      const encoder = new TextEncoder();
+      const u8 = encoder.encode(base64);
+      return new Blob([u8], { type: mimeType });
+    } catch {
+      return new Blob([], { type: mimeType });
+    }
   }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mimeType });
 }
 
 function chunkString(str: string, size: number): string[] {
@@ -82,22 +200,22 @@ export function initDB(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
 
-    request.onupgradeneeded = (event) => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("songs")) {
-        db.createObjectStore("songs", { keyPath: "id" });
+    request.onupgradeneeded = () => {
+      const idb = request.result;
+      if (!idb.objectStoreNames.contains("songs")) {
+        idb.createObjectStore("songs", { keyPath: "id" });
       }
-      if (!db.objectStoreNames.contains("ads")) {
-        db.createObjectStore("ads", { keyPath: "id" });
+      if (!idb.objectStoreNames.contains("ads")) {
+        idb.createObjectStore("ads", { keyPath: "id" });
       }
     };
   });
 }
 
 async function saveSongToLocal(song: DbSong): Promise<void> {
-  const db = await initDB();
+  const idb = await initDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("songs", "readwrite");
+    const transaction = idb.transaction("songs", "readwrite");
     const store = transaction.objectStore("songs");
     const request = store.put(song);
     request.onsuccess = () => resolve();
@@ -106,9 +224,9 @@ async function saveSongToLocal(song: DbSong): Promise<void> {
 }
 
 async function getAllSongsFromLocal(): Promise<DbSong[]> {
-  const db = await initDB();
+  const idb = await initDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("songs", "readonly");
+    const transaction = idb.transaction("songs", "readonly");
     const store = transaction.objectStore("songs");
     const request = store.getAll();
     request.onsuccess = () => resolve(request.result || []);
@@ -117,9 +235,9 @@ async function getAllSongsFromLocal(): Promise<DbSong[]> {
 }
 
 async function deleteSongFromLocal(id: string): Promise<void> {
-  const db = await initDB();
+  const idb = await initDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("songs", "readwrite");
+    const transaction = idb.transaction("songs", "readwrite");
     const store = transaction.objectStore("songs");
     const request = store.delete(id);
     request.onsuccess = () => resolve();
@@ -128,9 +246,9 @@ async function deleteSongFromLocal(id: string): Promise<void> {
 }
 
 async function saveAdToLocal(ad: DbAd): Promise<void> {
-  const db = await initDB();
+  const idb = await initDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("ads", "readwrite");
+    const transaction = idb.transaction("ads", "readwrite");
     const store = transaction.objectStore("ads");
     const request = store.put(ad);
     request.onsuccess = () => resolve();
@@ -139,9 +257,9 @@ async function saveAdToLocal(ad: DbAd): Promise<void> {
 }
 
 async function getAllAdsFromLocal(): Promise<DbAd[]> {
-  const db = await initDB();
+  const idb = await initDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("ads", "readonly");
+    const transaction = idb.transaction("ads", "readonly");
     const store = transaction.objectStore("ads");
     const request = store.getAll();
     request.onsuccess = () => resolve(request.result || []);
@@ -150,9 +268,9 @@ async function getAllAdsFromLocal(): Promise<DbAd[]> {
 }
 
 async function deleteAdFromLocal(id: string): Promise<void> {
-  const db = await initDB();
+  const idb = await initDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("ads", "readwrite");
+    const transaction = idb.transaction("ads", "readwrite");
     const store = transaction.objectStore("ads");
     const request = store.delete(id);
     request.onsuccess = () => resolve();
@@ -160,93 +278,248 @@ async function deleteAdFromLocal(id: string): Promise<void> {
   });
 }
 
-// --- Firebase Sync Public API Functions ---
+// --- Persistent Deleted Items Helper ---
+
+function getDeletedIds(): Set<string> {
+  try {
+    const savedNew = localStorage.getItem("swagat_deleted_ids");
+    const savedOld = localStorage.getItem("swagat_deleted_samples");
+    const arr1 = savedNew ? JSON.parse(savedNew) : [];
+    const arr2 = savedOld ? JSON.parse(savedOld) : [];
+    return new Set([...arr1, ...arr2]);
+  } catch {
+    return new Set();
+  }
+}
+
+export function recordDeletedId(id: string): void {
+  try {
+    const deleted = getDeletedIds();
+    deleted.add(id);
+    const arr = Array.from(deleted);
+    localStorage.setItem("swagat_deleted_ids", JSON.stringify(arr));
+    localStorage.setItem("swagat_deleted_samples", JSON.stringify(arr));
+
+    // Persist tombstone in Firestore so all connected devices sync deletion in realtime
+    setDoc(doc(db, "deleted_ids", id), {
+      id,
+      deletedAt: new Date().toISOString()
+    }).catch(err => console.warn("Notice: deleted_ids tombstone write:", err));
+  } catch (e) {
+    console.error("Error recording deleted ID:", e);
+  }
+}
+
+export function removeDeletedId(id: string): void {
+  try {
+    const deleted = getDeletedIds();
+    if (deleted.has(id)) {
+      deleted.delete(id);
+      const arr = Array.from(deleted);
+      localStorage.setItem("swagat_deleted_ids", JSON.stringify(arr));
+      localStorage.setItem("swagat_deleted_samples", JSON.stringify(arr));
+    }
+    deleteDoc(doc(db, "deleted_ids", id)).catch(() => {});
+  } catch (e) {
+    console.error("Error removing deleted ID:", e);
+  }
+}
+
+export function subscribeDeletedIds(callback: (deletedSet: Set<string>) => void): () => void {
+  const deletedColRef = collection(db, "deleted_ids");
+  return onSnapshot(deletedColRef, (snapshot) => {
+    try {
+      const deletedSet = getDeletedIds();
+      snapshot.forEach(docSnap => {
+        if (docSnap.id) {
+          deletedSet.add(docSnap.id);
+          deleteSongFromLocal(docSnap.id).catch(() => {});
+          deleteAdFromLocal(docSnap.id).catch(() => {});
+        }
+      });
+      const arr = Array.from(deletedSet);
+      localStorage.setItem("swagat_deleted_ids", JSON.stringify(arr));
+      localStorage.setItem("swagat_deleted_samples", JSON.stringify(arr));
+      callback(deletedSet);
+    } catch (e) {
+      console.error("Error in subscribeDeletedIds listener:", e);
+      callback(getDeletedIds());
+    }
+  }, (err) => {
+    console.warn("Notice in subscribeDeletedIds listener:", err);
+    callback(getDeletedIds());
+  });
+}
+
+// --- Firebase Sync Public API Functions & Realtime Listeners ---
 
 export async function saveSong(song: DbSong): Promise<void> {
-  // 1. Save locally to IndexedDB cache
-  await saveSongToLocal(song);
+  removeDeletedId(song.id);
 
-  // 2. Convert Blobs to Base64 strings
-  const audioBase64 = await blobToBase64(song.audioBlob);
-  const photoBase64 = await blobToBase64(song.photoBlob);
+  // 1. Compress photo to clean lightweight DataURL (< 100KB)
+  const photoDataUrl = await compressImageToMaxDataUrl(song.photoBlob, 800, 0.82);
+  const compressedPhotoBlob = dataUrlToBlob(photoDataUrl);
 
-  // 3. Chunk the strings
-  const audioChunks = chunkString(audioBase64, CHUNK_SIZE);
-  const photoChunks = chunkString(photoBase64, CHUNK_SIZE);
+  const songToSave: DbSong = {
+    ...song,
+    photoBlob: compressedPhotoBlob.size > 0 ? compressedPhotoBlob : song.photoBlob
+  };
 
-  // 4. Save metadata to Firestore
-  const songDocRef = doc(db, "songs", song.id);
-  await setDoc(songDocRef, {
-    id: song.id,
-    title: song.title,
-    artist: song.artist,
-    audioMimeType: song.audioBlob.type,
-    photoMimeType: song.photoBlob.type,
-    createdAt: song.createdAt,
-    audioChunkCount: audioChunks.length,
-    photoChunkCount: photoChunks.length
+  // 2. Save locally to IndexedDB cache
+  await saveSongToLocal(songToSave);
+
+  try {
+    // 3. Convert audio blob to base64 string
+    const audioBase64 = await blobToBase64(song.audioBlob);
+    const audioChunks = chunkString(audioBase64, CHUNK_SIZE);
+
+    // 4. Save metadata and photoDataUrl directly to Firestore doc
+    const songDocRef = doc(db, "songs", song.id);
+    await setDoc(songDocRef, {
+      id: song.id,
+      title: song.title,
+      artist: song.artist,
+      photoDataUrl: photoDataUrl,
+      audioMimeType: song.audioBlob.type || "audio/mp3",
+      createdAt: song.createdAt,
+      audioChunkCount: audioChunks.length
+    });
+
+    // 5. Upload audio chunks to subcollection
+    const chunkPromises = [];
+    for (let i = 0; i < audioChunks.length; i++) {
+      const chunkDocRef = doc(db, "songs", song.id, "audio_chunks", `chunk_${i}`);
+      chunkPromises.push(setDoc(chunkDocRef, { data: audioChunks[i] }));
+    }
+    await Promise.all(chunkPromises);
+  } catch (err) {
+    console.warn("Firestore saveSong notice (saved to local cache):", err);
+  }
+}
+
+export function subscribeSongs(callback: (songs: DbSong[]) => void): () => void {
+  const songsCollectionRef = collection(db, "songs");
+  return onSnapshot(songsCollectionRef, async (querySnapshot) => {
+    try {
+      const deletedIds = getDeletedIds();
+      const firestoreSongsList: any[] = [];
+      querySnapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data && data.id && !deletedIds.has(data.id)) {
+          firestoreSongsList.push(data);
+        }
+      });
+
+      firestoreSongsList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      const localSongs = await getAllSongsFromLocal();
+      const localSongsMap = new Map(localSongs.filter(s => !deletedIds.has(s.id)).map(s => [s.id, s]));
+      const seenIds = new Set<string>();
+
+      const songsToReturn: DbSong[] = [];
+
+      for (const fSong of firestoreSongsList) {
+        if (deletedIds.has(fSong.id)) continue;
+        seenIds.add(fSong.id);
+        const cached = localSongsMap.get(fSong.id);
+        if (cached && cached.photoBlob && cached.photoBlob.size > 0) {
+          songsToReturn.push(cached);
+        } else {
+          // Reconstruct photoBlob from photoDataUrl or fallback SVG
+          const photoDataUrl = fSong.photoDataUrl || DEFAULT_COVER_SVG;
+          let photoBlob = dataUrlToBlob(photoDataUrl);
+          if (photoBlob.size === 0) {
+            photoBlob = dataUrlToBlob(DEFAULT_COVER_SVG);
+          }
+
+          // Fetch audio chunks
+          const audioChunksPromises = [];
+          for (let i = 0; i < (fSong.audioChunkCount || 0); i++) {
+            const chunkDocRef = doc(db, "songs", fSong.id, "audio_chunks", `chunk_${i}`);
+            audioChunksPromises.push(getDoc(chunkDocRef));
+          }
+          const audioSnaps = await Promise.all(audioChunksPromises);
+          const audioBase64 = audioSnaps.map(snap => snap.data()?.data || "").join("");
+          const audioBlob = base64ToBlob(audioBase64, fSong.audioMimeType || "audio/mp3");
+
+          const reconstructedSong: DbSong = {
+            id: fSong.id,
+            title: fSong.title,
+            artist: fSong.artist,
+            audioBlob,
+            photoBlob,
+            createdAt: fSong.createdAt
+          };
+
+          await saveSongToLocal(reconstructedSong);
+          songsToReturn.push(reconstructedSong);
+        }
+      }
+
+      // Merge local songs that haven't synced to Firestore due to quota limits
+      for (const [id, localSong] of localSongsMap.entries()) {
+        if (!seenIds.has(id) && !deletedIds.has(id)) {
+          songsToReturn.push(localSong);
+        }
+      }
+
+      callback(songsToReturn);
+    } catch (err) {
+      console.error("Error in subscribeSongs listener:", err);
+      const deletedIds = getDeletedIds();
+      const local = await getAllSongsFromLocal();
+      callback(local.filter(s => !deletedIds.has(s.id)));
+    }
+  }, (error) => {
+    console.error("Firestore songs onSnapshot error:", error);
+    const deletedIds = getDeletedIds();
+    getAllSongsFromLocal().then(local => callback(local.filter(s => !deletedIds.has(s.id))));
   });
-
-  // 5. Upload chunks to subcollections
-  const chunkPromises = [];
-
-  for (let i = 0; i < audioChunks.length; i++) {
-    const chunkDocRef = doc(db, "songs", song.id, "audio_chunks", `chunk_${i}`);
-    chunkPromises.push(setDoc(chunkDocRef, { data: audioChunks[i] }));
-  }
-
-  for (let i = 0; i < photoChunks.length; i++) {
-    const chunkDocRef = doc(db, "songs", song.id, "photo_chunks", `chunk_${i}`);
-    chunkPromises.push(setDoc(chunkDocRef, { data: photoChunks[i] }));
-  }
-
-  await Promise.all(chunkPromises);
 }
 
 export async function getAllSongs(): Promise<DbSong[]> {
+  const deletedIds = getDeletedIds();
   try {
-    // 1. Fetch metadata of all songs from Firestore
     const songsCollectionRef = collection(db, "songs");
     const querySnapshot = await getDocs(songsCollectionRef);
     
     const firestoreSongsList: any[] = [];
     querySnapshot.forEach(docSnap => {
-      firestoreSongsList.push(docSnap.data());
+      const data = docSnap.data();
+      if (data && data.id && !deletedIds.has(data.id)) {
+        firestoreSongsList.push(data);
+      }
     });
 
-    // Sort by createdAt or default
     firestoreSongsList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
-    // 2. For each song, check if it exists in local IndexedDB cache
     const localSongs = await getAllSongsFromLocal();
-    const localSongsMap = new Map(localSongs.map(s => [s.id, s]));
+    const localSongsMap = new Map(localSongs.filter(s => !deletedIds.has(s.id)).map(s => [s.id, s]));
+    const seenIds = new Set<string>();
 
     const songsToReturn: DbSong[] = [];
 
     for (const fSong of firestoreSongsList) {
+      if (deletedIds.has(fSong.id)) continue;
+      seenIds.add(fSong.id);
       const cached = localSongsMap.get(fSong.id);
-      if (cached) {
+      if (cached && cached.photoBlob && cached.photoBlob.size > 0) {
         songsToReturn.push(cached);
       } else {
-        // Not cached! Fetch its chunks and construct Blobs
+        const photoDataUrl = fSong.photoDataUrl || DEFAULT_COVER_SVG;
+        let photoBlob = dataUrlToBlob(photoDataUrl);
+        if (photoBlob.size === 0) {
+          photoBlob = dataUrlToBlob(DEFAULT_COVER_SVG);
+        }
+
         const audioChunksPromises = [];
-        for (let i = 0; i < fSong.audioChunkCount; i++) {
+        for (let i = 0; i < (fSong.audioChunkCount || 0); i++) {
           const chunkDocRef = doc(db, "songs", fSong.id, "audio_chunks", `chunk_${i}`);
           audioChunksPromises.push(getDoc(chunkDocRef));
         }
         const audioSnaps = await Promise.all(audioChunksPromises);
         const audioBase64 = audioSnaps.map(snap => snap.data()?.data || "").join("");
-
-        const photoChunksPromises = [];
-        for (let i = 0; i < fSong.photoChunkCount; i++) {
-          const chunkDocRef = doc(db, "songs", fSong.id, "photo_chunks", `chunk_${i}`);
-          photoChunksPromises.push(getDoc(chunkDocRef));
-        }
-        const photoSnaps = await Promise.all(photoChunksPromises);
-        const photoBase64 = photoSnaps.map(snap => snap.data()?.data || "").join("");
-
-        const audioBlob = base64ToBlob(audioBase64, fSong.audioMimeType);
-        const photoBlob = base64ToBlob(photoBase64, fSong.photoMimeType);
+        const audioBlob = base64ToBlob(audioBase64, fSong.audioMimeType || "audio/mp3");
 
         const reconstructedSong: DbSong = {
           id: fSong.id,
@@ -257,120 +530,176 @@ export async function getAllSongs(): Promise<DbSong[]> {
           createdAt: fSong.createdAt
         };
 
-        // Cache it locally
         await saveSongToLocal(reconstructedSong);
         songsToReturn.push(reconstructedSong);
       }
     }
 
-    // 3. Clean up deleted songs from local IndexedDB cache
-    const firestoreSongIds = new Set(firestoreSongsList.map(s => s.id));
-    for (const localSong of localSongs) {
-      if (!firestoreSongIds.has(localSong.id)) {
-        await deleteSongFromLocal(localSong.id);
+    for (const [id, localSong] of localSongsMap.entries()) {
+      if (!seenIds.has(id) && !deletedIds.has(id)) {
+        songsToReturn.push(localSong);
       }
     }
 
     return songsToReturn;
   } catch (err) {
-    console.error("Failed to sync/fetch from Firestore, falling back to local storage:", err);
-    return getAllSongsFromLocal();
+    console.error("Failed to fetch songs from Firestore, falling back to local storage:", err);
+    const local = await getAllSongsFromLocal();
+    return local.filter(s => !deletedIds.has(s.id));
   }
 }
 
 export async function deleteSong(id: string): Promise<void> {
-  // 1. Delete from IndexedDB cache
+  recordDeletedId(id);
   await deleteSongFromLocal(id);
 
-  // 2. Delete main doc from Firestore
-  const songDocRef = doc(db, "songs", id);
-  await deleteDoc(songDocRef);
-
-  // 3. Delete chunks from subcollections
   try {
+    const songDocRef = doc(db, "songs", id);
+    await deleteDoc(songDocRef);
+
     const audioChunksRef = collection(db, "songs", id, "audio_chunks");
     const audioSnap = await getDocs(audioChunksRef);
-    const photoChunksRef = collection(db, "songs", id, "photo_chunks");
-    const photoSnap = await getDocs(photoChunksRef);
-
     const deletePromises: Promise<void>[] = [];
     audioSnap.forEach(docSnap => {
       deletePromises.push(deleteDoc(docSnap.ref));
     });
-    photoSnap.forEach(docSnap => {
-      deletePromises.push(deleteDoc(docSnap.ref));
-    });
     await Promise.all(deletePromises);
   } catch (err) {
-    console.error("Error deleting song chunks:", err);
+    console.warn("Error deleting song from Firestore (quota/network):", err);
   }
 }
 
 export async function saveAd(ad: DbAd): Promise<void> {
-  // 1. Save locally to IndexedDB cache
-  await saveAdToLocal(ad);
+  removeDeletedId(ad.id);
 
-  // 2. Convert Blob to Base64 string
-  const imageBase64 = await blobToBase64(ad.imageBlob);
+  // 1. Compress advertisement poster image to lightweight DataURL (< 100KB)
+  const imageDataUrl = await compressImageToMaxDataUrl(ad.imageBlob, 800, 0.82);
+  const compressedImageBlob = dataUrlToBlob(imageDataUrl);
 
-  // 3. Chunk the string
-  const imageChunks = chunkString(imageBase64, CHUNK_SIZE);
+  const adToSave: DbAd = {
+    ...ad,
+    imageBlob: compressedImageBlob.size > 0 ? compressedImageBlob : ad.imageBlob
+  };
 
-  // 4. Save metadata to Firestore
-  const adDocRef = doc(db, "ads", ad.id);
-  await setDoc(adDocRef, {
-    id: ad.id,
-    title: ad.title,
-    link: ad.link || "",
-    imageMimeType: ad.imageBlob.type,
-    createdAt: ad.createdAt,
-    imageChunkCount: imageChunks.length
-  });
+  // 2. Save locally to IndexedDB cache
+  await saveAdToLocal(adToSave);
 
-  // 5. Upload chunks to subcollection
-  const chunkPromises = [];
-  for (let i = 0; i < imageChunks.length; i++) {
-    const chunkDocRef = doc(db, "ads", ad.id, "image_chunks", `chunk_${i}`);
-    chunkPromises.push(setDoc(chunkDocRef, { data: imageChunks[i] }));
+  try {
+    // 3. Save metadata and imageDataUrl directly to Firestore doc
+    const adDocRef = doc(db, "ads", ad.id);
+    await setDoc(adDocRef, {
+      id: ad.id,
+      title: ad.title,
+      link: ad.link || "",
+      imageDataUrl: imageDataUrl,
+      createdAt: ad.createdAt
+    });
+  } catch (err) {
+    console.warn("Firestore saveAd quota/network notice (saved to local cache):", err);
   }
-  await Promise.all(chunkPromises);
+}
+
+export function subscribeAds(callback: (ads: DbAd[]) => void): () => void {
+  const adsCollectionRef = collection(db, "ads");
+  return onSnapshot(adsCollectionRef, async (querySnapshot) => {
+    try {
+      const deletedIds = getDeletedIds();
+      const firestoreAdsList: any[] = [];
+      querySnapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data && data.id && !deletedIds.has(data.id)) {
+          firestoreAdsList.push(data);
+        }
+      });
+
+      firestoreAdsList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      const localAds = await getAllAdsFromLocal();
+      const localAdsMap = new Map(localAds.filter(a => !deletedIds.has(a.id)).map(a => [a.id, a]));
+      const seenIds = new Set<string>();
+
+      const adsToReturn: DbAd[] = [];
+
+      for (const fAd of firestoreAdsList) {
+        if (deletedIds.has(fAd.id)) continue;
+        seenIds.add(fAd.id);
+        const cached = localAdsMap.get(fAd.id);
+        if (cached && cached.imageBlob && cached.imageBlob.size > 0) {
+          adsToReturn.push(cached);
+        } else {
+          const imageDataUrl = fAd.imageDataUrl || DEFAULT_COVER_SVG;
+          let imageBlob = dataUrlToBlob(imageDataUrl);
+          if (imageBlob.size === 0) {
+            imageBlob = dataUrlToBlob(DEFAULT_COVER_SVG);
+          }
+
+          const reconstructedAd: DbAd = {
+            id: fAd.id,
+            title: fAd.title,
+            imageBlob,
+            link: fAd.link || undefined,
+            createdAt: fAd.createdAt
+          };
+
+          await saveAdToLocal(reconstructedAd);
+          adsToReturn.push(reconstructedAd);
+        }
+      }
+
+      for (const [id, localAd] of localAdsMap.entries()) {
+        if (!seenIds.has(id) && !deletedIds.has(id)) {
+          adsToReturn.push(localAd);
+        }
+      }
+
+      callback(adsToReturn);
+    } catch (err) {
+      console.error("Error in subscribeAds listener:", err);
+      const deletedIds = getDeletedIds();
+      const local = await getAllAdsFromLocal();
+      callback(local.filter(a => !deletedIds.has(a.id)));
+    }
+  }, (error) => {
+    console.error("Firestore ads onSnapshot error:", error);
+    const deletedIds = getDeletedIds();
+    getAllAdsFromLocal().then(local => callback(local.filter(a => !deletedIds.has(a.id))));
+  });
 }
 
 export async function getAllAds(): Promise<DbAd[]> {
+  const deletedIds = getDeletedIds();
   try {
-    // 1. Fetch metadata of all ads from Firestore
     const adsCollectionRef = collection(db, "ads");
     const querySnapshot = await getDocs(adsCollectionRef);
 
     const firestoreAdsList: any[] = [];
     querySnapshot.forEach(docSnap => {
-      firestoreAdsList.push(docSnap.data());
+      const data = docSnap.data();
+      if (data && data.id && !deletedIds.has(data.id)) {
+        firestoreAdsList.push(data);
+      }
     });
 
-    // Sort by createdAt or default
     firestoreAdsList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
-    // 2. For each ad, check if it exists in local IndexedDB cache
     const localAds = await getAllAdsFromLocal();
-    const localAdsMap = new Map(localAds.map(a => [a.id, a]));
+    const localAdsMap = new Map(localAds.filter(a => !deletedIds.has(a.id)).map(a => [a.id, a]));
+    const seenIds = new Set<string>();
 
     const adsToReturn: DbAd[] = [];
 
     for (const fAd of firestoreAdsList) {
+      if (deletedIds.has(fAd.id)) continue;
+      seenIds.add(fAd.id);
       const cached = localAdsMap.get(fAd.id);
-      if (cached) {
+      if (cached && cached.imageBlob && cached.imageBlob.size > 0) {
         adsToReturn.push(cached);
       } else {
-        // Fetch image chunks
-        const imageChunksPromises = [];
-        for (let i = 0; i < fAd.imageChunkCount; i++) {
-          const chunkDocRef = doc(db, "ads", fAd.id, "image_chunks", `chunk_${i}`);
-          imageChunksPromises.push(getDoc(chunkDocRef));
+        const imageDataUrl = fAd.imageDataUrl || DEFAULT_COVER_SVG;
+        let imageBlob = dataUrlToBlob(imageDataUrl);
+        if (imageBlob.size === 0) {
+          imageBlob = dataUrlToBlob(DEFAULT_COVER_SVG);
         }
-        const imageSnaps = await Promise.all(imageChunksPromises);
-        const imageBase64 = imageSnaps.map(snap => snap.data()?.data || "").join("");
-
-        const imageBlob = base64ToBlob(imageBase64, fAd.imageMimeType);
 
         const reconstructedAd: DbAd = {
           id: fAd.id,
@@ -380,45 +709,33 @@ export async function getAllAds(): Promise<DbAd[]> {
           createdAt: fAd.createdAt
         };
 
-        // Cache it locally
         await saveAdToLocal(reconstructedAd);
         adsToReturn.push(reconstructedAd);
       }
     }
 
-    // 3. Clean up deleted ads from local IndexedDB cache
-    const firestoreAdIds = new Set(firestoreAdsList.map(a => a.id));
-    for (const localAd of localAds) {
-      if (!firestoreAdIds.has(localAd.id)) {
-        await deleteAdFromLocal(localAd.id);
+    for (const [id, localAd] of localAdsMap.entries()) {
+      if (!seenIds.has(id) && !deletedIds.has(id)) {
+        adsToReturn.push(localAd);
       }
     }
 
     return adsToReturn;
   } catch (err) {
-    console.error("Failed to sync/fetch ads from Firestore, falling back to local storage:", err);
-    return getAllAdsFromLocal();
+    console.error("Failed to fetch ads from Firestore, falling back to local storage:", err);
+    const local = await getAllAdsFromLocal();
+    return local.filter(a => !deletedIds.has(a.id));
   }
 }
 
 export async function deleteAd(id: string): Promise<void> {
-  // 1. Delete from IndexedDB cache
+  recordDeletedId(id);
   await deleteAdFromLocal(id);
 
-  // 2. Delete main doc from Firestore
-  const adDocRef = doc(db, "ads", id);
-  await deleteDoc(adDocRef);
-
-  // 3. Delete chunks from subcollection
   try {
-    const imageChunksRef = collection(db, "ads", id, "image_chunks");
-    const snap = await getDocs(imageChunksRef);
-    const deletePromises: Promise<void>[] = [];
-    snap.forEach(docSnap => {
-      deletePromises.push(deleteDoc(docSnap.ref));
-    });
-    await Promise.all(deletePromises);
+    const adDocRef = doc(db, "ads", id);
+    await deleteDoc(adDocRef);
   } catch (err) {
-    console.error("Error deleting ad chunks:", err);
+    console.warn("Error deleting ad from Firestore (quota/network):", err);
   }
 }
