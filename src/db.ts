@@ -351,6 +351,98 @@ export function subscribeDeletedIds(callback: (deletedSet: Set<string>) => void)
   });
 }
 
+export interface DbComment {
+  id: string;
+  itemId: string; // song or ad ID
+  itemType: "song" | "ad";
+  userName: string;
+  comment: string;
+  createdAt: string;
+}
+
+// --- COMMENTS SYSTEM (Realtime Firestore & Local Persistence) ---
+
+export function getLocalComments(): DbComment[] {
+  try {
+    const saved = localStorage.getItem("swagat_app_comments");
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalComments(comments: DbComment[]): void {
+  try {
+    localStorage.setItem("swagat_app_comments", JSON.stringify(comments));
+  } catch (e) {
+    console.error("Error saving comments to localStorage:", e);
+  }
+}
+
+export async function addCommentToDb(comment: DbComment): Promise<void> {
+  const current = getLocalComments();
+  const updated = [comment, ...current.filter(c => c.id !== comment.id)];
+  saveLocalComments(updated);
+
+  try {
+    const commentDocRef = doc(db, "comments", comment.id);
+    await setDoc(commentDocRef, comment, { merge: true });
+  } catch (e) {
+    console.warn("Firestore addComment notice (saved locally):", e);
+  }
+}
+
+export async function deleteCommentFromDb(commentId: string): Promise<void> {
+  const current = getLocalComments();
+  const updated = current.filter(c => c.id !== commentId);
+  saveLocalComments(updated);
+
+  try {
+    const commentDocRef = doc(db, "comments", commentId);
+    await deleteDoc(commentDocRef);
+  } catch (e) {
+    console.warn("Firestore deleteComment notice (deleted locally):", e);
+  }
+}
+
+export function subscribeComments(callback: (comments: DbComment[]) => void): () => void {
+  const commentsColRef = collection(db, "comments");
+  return onSnapshot(commentsColRef, (snapshot) => {
+    try {
+      const firestoreComments: DbComment[] = [];
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data && data.id && data.itemId && data.comment) {
+          firestoreComments.push(data as DbComment);
+        }
+      });
+
+      firestoreComments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      // Merge with local comments if any exist offline
+      const localComments = getLocalComments();
+      const mergedMap = new Map<string, DbComment>();
+      firestoreComments.forEach(c => mergedMap.set(c.id, c));
+      localComments.forEach(c => {
+        if (!mergedMap.has(c.id)) mergedMap.set(c.id, c);
+      });
+
+      const finalComments = Array.from(mergedMap.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      saveLocalComments(finalComments);
+      callback(finalComments);
+    } catch (e) {
+      console.error("Error in subscribeComments listener:", e);
+      callback(getLocalComments());
+    }
+  }, (err) => {
+    console.warn("Notice in subscribeComments listener:", err);
+    callback(getLocalComments());
+  });
+}
+
 // --- SONG VIEW COUNTING (3-Minute Original View Count) ---
 
 export function getLocalSongViews(): Record<string, number> {

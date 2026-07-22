@@ -42,7 +42,9 @@ import {
   Copy,
   Send,
   ExternalLink,
-  MessageCircle
+  MessageCircle,
+  MessageSquare,
+  Image
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -67,8 +69,12 @@ import {
   subscribeSongViews,
   incrementSongViews,
   getLocalSongViews,
+  subscribeComments,
+  addCommentToDb,
+  deleteCommentFromDb,
   DbSong,
-  DbAd 
+  DbAd,
+  DbComment 
 } from "./db";
 
 interface Task {
@@ -230,8 +236,62 @@ export default function App() {
     window.open(whatsappUrl, "_blank");
   };
 
-  const handleFacebookShare = () => {
+  const handleDownloadPhotoForShare = async () => {
+    if (!shareModalItem) return;
+    try {
+      let blob = shareModalItem.photoBlob;
+      if (!blob && shareModalItem.imageUrl) {
+        const resp = await fetch(shareModalItem.imageUrl);
+        blob = await resp.blob();
+      }
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const cleanTitle = (shareModalItem.title || "odiasong").replace(/[^a-zA-Z0-9\u0B00-\u0B7F]+/g, "_");
+        a.download = `${cleanTitle}_poster.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      console.error("Error downloading share photo:", e);
+    }
+  };
+
+  const handleFacebookShare = async () => {
+    if (!shareModalItem) return;
     const { text, url } = getShareDetails();
+
+    // 1. If mobile native file share is available, try native share sheet first (Attaches photo file directly into Facebook app!)
+    if (navigator.canShare) {
+      try {
+        let fileBlob = shareModalItem.photoBlob;
+        if (!fileBlob && shareModalItem.imageUrl) {
+          const resp = await fetch(shareModalItem.imageUrl);
+          fileBlob = await resp.blob();
+        }
+        if (fileBlob) {
+          const ext = fileBlob.type.includes("png") ? "png" : "jpg";
+          const file = new File([fileBlob], `${shareModalItem.title}.${ext}`, { type: fileBlob.type || "image/jpeg" });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              title: shareModalItem.title,
+              text: text,
+              url: url,
+              files: [file]
+            });
+            return;
+          }
+        }
+      } catch (e) {
+        console.log("Facebook file share fallback:", e);
+      }
+    }
+
+    // 2. Otherwise download photo to gallery and open Facebook sharer window
+    await handleDownloadPhotoForShare();
     const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}&quote=${encodeURIComponent(text)}`;
     window.open(facebookUrl, "_blank");
   };
@@ -240,10 +300,20 @@ export default function App() {
     if (!shareModalItem) return;
     const { text, url } = getShareDetails();
 
-    if (shareModalItem.photoBlob && navigator.canShare) {
+    let fileBlob = shareModalItem.photoBlob;
+    if (!fileBlob && shareModalItem.imageUrl) {
       try {
-        const ext = shareModalItem.photoBlob.type.includes("png") ? "png" : "jpg";
-        const file = new File([shareModalItem.photoBlob], `${shareModalItem.title}.${ext}`, { type: shareModalItem.photoBlob.type || "image/jpeg" });
+        const resp = await fetch(shareModalItem.imageUrl);
+        fileBlob = await resp.blob();
+      } catch (e) {
+        console.log("Fetch image blob notice:", e);
+      }
+    }
+
+    if (fileBlob && navigator.canShare) {
+      try {
+        const ext = fileBlob.type.includes("png") ? "png" : "jpg";
+        const file = new File([fileBlob], `${shareModalItem.title}.${ext}`, { type: fileBlob.type || "image/jpeg" });
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({
             title: shareModalItem.title,
@@ -391,6 +461,50 @@ export default function App() {
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.8);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  // Comments State
+  const [allComments, setAllComments] = useState<DbComment[]>([]);
+  const [commentUserName, setCommentUserName] = useState<string>(() => localStorage.getItem("swagat_user_name") || "");
+  const [commentTextMap, setCommentTextMap] = useState<Record<string, string>>({});
+  const [commentModalItem, setCommentModalItem] = useState<{
+    id: string;
+    type: "song" | "ad";
+    title: string;
+    subtitle?: string;
+    imageUrl?: string;
+  } | null>(null);
+
+  // Subscribe to realtime comments across Firestore
+  useEffect(() => {
+    const unsub = subscribeComments((comments) => {
+      setAllComments(comments);
+    });
+    return () => unsub();
+  }, []);
+
+  const handlePostComment = async (itemId: string, itemType: "song" | "ad") => {
+    const text = (commentTextMap[itemId] || "").trim();
+    if (!text) return;
+
+    const nameToUse = commentUserName.trim() || "ସ୍ରୋତା (Listener)";
+    localStorage.setItem("swagat_user_name", nameToUse);
+
+    const newComment: DbComment = {
+      id: "comment_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+      itemId,
+      itemType,
+      userName: nameToUse,
+      comment: text,
+      createdAt: new Date().toISOString()
+    };
+
+    await addCommentToDb(newComment);
+    setCommentTextMap((prev) => ({ ...prev, [itemId]: "" }));
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    await deleteCommentFromDb(commentId);
+  };
 
   // Song Views & 3-Minute Verification Listener State
   const [songViewsMap, setSongViewsMap] = useState<Record<string, number>>(() => getLocalSongViews());
@@ -926,6 +1040,96 @@ export default function App() {
 
   const quote: OdiaQuote = ODIA_QUOTES[currentQuoteIndex];
 
+  const renderCommentBox = (itemId: string, itemType: "song" | "ad", itemTitle: string) => {
+    const itemComments = allComments.filter((c) => c.itemId === itemId);
+    const currentInput = commentTextMap[itemId] || "";
+
+    return (
+      <div className="bg-amber-50/70 border border-amber-200/80 rounded-2xl p-3.5 space-y-3 shadow-2xs mt-3 text-left">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-950 font-bold text-xs font-odia">
+            <MessageSquare className="w-4 h-4 text-amber-700" />
+            <span>ମତାମତ ଓ କମେଣ୍ଟ ({toOdiaDigits(itemComments.length)})</span>
+          </div>
+          <span className="text-[10px] font-bold text-amber-800 font-odia bg-amber-100/90 border border-amber-200 px-2 py-0.5 rounded-md">
+            କମେଣ୍ଟ ବାକ୍ସ (Comment Box)
+          </span>
+        </div>
+
+        {/* Input Box */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 bg-white border border-amber-200 rounded-xl px-3 py-1.5 focus-within:border-amber-500 shadow-2xs">
+            <User className="w-4 h-4 text-slate-400 flex-shrink-0" />
+            <input
+              type="text"
+              placeholder="ଆପଣଙ୍କ ନାମ (Your Name)..."
+              value={commentUserName}
+              onChange={(e) => setCommentUserName(e.target.value)}
+              className="w-full text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none font-odia"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 bg-white border border-amber-200 rounded-xl px-3 py-2 focus-within:border-amber-500 shadow-2xs">
+            <textarea
+              rows={2}
+              placeholder={`"${itemTitle}" ଗୀତ/ଫୋଟ ବିଷୟରେ ମତାମତ ଲେଖନ୍ତୁ...`}
+              value={currentInput}
+              onChange={(e) => setCommentTextMap({ ...commentTextMap, [itemId]: e.target.value })}
+              className="w-full text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none resize-none font-odia"
+            />
+            <button
+              onClick={() => handlePostComment(itemId, itemType)}
+              disabled={!currentInput.trim()}
+              className="p-2.5 bg-amber-800 hover:bg-amber-950 disabled:bg-slate-300 text-white rounded-xl transition-all cursor-pointer flex-shrink-0 disabled:cursor-not-allowed shadow-xs active:scale-95"
+              title="ମତାମତ ପୋଷ୍ଟ କରନ୍ତୁ"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Comments List */}
+        {itemComments.length === 0 ? (
+          <p className="text-[11px] text-slate-400 italic text-center py-1 font-odia">
+            ଏପର୍ଯ୍ୟନ୍ତ କୌଣସି କମେଣ୍ଟ ନାହିଁ | ପ୍ରଥମ ମତାମତ ଦିଅନ୍ତୁ!
+          </p>
+        ) : (
+          <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+            {itemComments.map((comment) => (
+              <div
+                key={comment.id}
+                className="bg-white border border-amber-100 rounded-xl p-2.5 shadow-2xs flex items-start justify-between gap-2"
+              >
+                <div className="space-y-0.5 w-full">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-extrabold text-[11px] text-amber-950 font-odia">
+                      {comment.userName}
+                    </span>
+                    <span className="text-[9px] text-slate-400 font-mono">
+                      • {new Date(comment.createdAt).toLocaleDateString("or-IN", { month: 'short', day: 'numeric' })}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-700 font-odia leading-snug break-words">
+                    {comment.comment}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => handleDeleteComment(comment.id)}
+                  className="p-1 text-slate-300 hover:text-red-500 rounded transition-colors cursor-pointer flex-shrink-0"
+                  title="ଡିଲିଟ୍ କରନ୍ତୁ"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#FDFBF7] text-slate-800 font-sans antialiased selection:bg-amber-100 selection:text-amber-900 pb-36">
       
@@ -1313,10 +1517,24 @@ export default function App() {
                               imageUrl: activeSong.photoUrl,
                               photoBlob: activeSong.photoBlob
                             })}
-                            className="text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 px-3.5 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-odia shadow-xs transform active:scale-95"
+                            className="text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-odia shadow-xs transform active:scale-95"
                           >
                             <Share2 className="w-4 h-4 text-emerald-200" />
                             <span>ସେୟାର୍ (Share)</span>
+                          </button>
+
+                          <button
+                            onClick={() => setCommentModalItem({
+                              id: activeSong.id,
+                              type: "song",
+                              title: activeSong.title,
+                              subtitle: activeSong.artist,
+                              imageUrl: activeSong.photoUrl
+                            })}
+                            className="text-xs font-bold text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-3 py-1.5 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 font-odia shadow-xs"
+                          >
+                            <MessageSquare className="w-4 h-4 text-amber-800" />
+                            <span>ମତାମତ ({toOdiaDigits(allComments.filter(c => c.itemId === activeSong.id).length)})</span>
                           </button>
 
                           <button
@@ -1335,6 +1553,9 @@ export default function App() {
                             <span>ଡାଉନଲୋଡ୍ (MP3)</span>
                           </button>
                         </div>
+
+                        {/* Inline Comment Box under active playing song */}
+                        {renderCommentBox(activeSong.id, "song", activeSong.title)}
 
                       </div>
                     </div>
@@ -1421,7 +1642,7 @@ export default function App() {
                           {song.artist}
                         </p>
 
-                        <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between gap-1">
+                        <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1">
                           <button
                             onClick={() => setShareModalItem({
                               type: "song",
@@ -1430,7 +1651,7 @@ export default function App() {
                               imageUrl: song.photoUrl,
                               photoBlob: song.photoBlob
                             })}
-                            className="text-[10px] font-bold text-emerald-800 hover:text-emerald-950 flex items-center gap-1 font-odia bg-emerald-50 hover:bg-emerald-100 px-2 py-1 rounded-md transition-colors cursor-pointer"
+                            className="text-[10px] font-bold text-emerald-800 hover:text-emerald-950 flex items-center gap-1 font-odia bg-emerald-50 hover:bg-emerald-100 px-1.5 py-1 rounded-md transition-colors cursor-pointer"
                             title="Share Song"
                           >
                             <Share2 className="w-3 h-3 text-emerald-700" />
@@ -1438,19 +1659,35 @@ export default function App() {
                           </button>
 
                           <button
-                            onClick={() => setCheckSongTarget(song)}
-                            className="text-[10px] font-bold text-amber-800 hover:text-amber-950 flex items-center gap-1 font-odia bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-md transition-colors cursor-pointer"
+                            onClick={() => setCommentModalItem({
+                              id: song.id,
+                              type: "song",
+                              title: song.title,
+                              subtitle: song.artist,
+                              imageUrl: song.photoUrl
+                            })}
+                            className="text-[10px] font-bold text-amber-900 hover:text-amber-950 flex items-center gap-1 font-odia bg-amber-50 hover:bg-amber-100 px-1.5 py-1 rounded-md transition-colors cursor-pointer"
+                            title="କମେଣ୍ଟ ଦିଅନ୍ତୁ"
                           >
-                            <ShieldCheck className="w-3 h-3 text-amber-700" />
+                            <MessageSquare className="w-3 h-3 text-amber-700" />
+                            {toOdiaDigits(allComments.filter(c => c.itemId === song.id).length)}
+                          </button>
+
+                          <button
+                            onClick={() => setCheckSongTarget(song)}
+                            className="text-[10px] font-bold text-slate-700 hover:text-slate-950 flex items-center gap-1 font-odia bg-slate-50 hover:bg-slate-100 px-1.5 py-1 rounded-md transition-colors cursor-pointer"
+                            title="ମୂଳସତ୍ତ୍ୱ ପରୀକ୍ଷା"
+                          >
+                            <ShieldCheck className="w-3 h-3 text-slate-600" />
                             ପରୀକ୍ଷା
                           </button>
 
                           <button
                             onClick={(e) => handleDownloadSong(song, e)}
-                            className="text-[10px] font-bold text-slate-500 hover:text-amber-800 flex items-center gap-1 font-odia cursor-pointer"
+                            className="text-[10px] font-bold text-slate-500 hover:text-amber-800 flex items-center gap-1 font-odia cursor-pointer px-1 py-1"
+                            title="Download MP3"
                           >
                             <Download className="w-3 h-3" />
-                            ଡାଉନଲୋଡ୍
                           </button>
                         </div>
                       </div>
@@ -2665,13 +2902,22 @@ export default function App() {
                   </button>
                 </div>
 
+                {/* Direct Download Photo Button for Facebook Posts */}
+                <button
+                  onClick={handleDownloadPhotoForShare}
+                  className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/80 font-bold rounded-2xl shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-2 text-xs font-odia"
+                >
+                  <Image className="w-4 h-4 text-emerald-700" />
+                  <span>🖼️ ଫୋଟ ଡାଉନ୍‌ଲୋଡ୍ କରନ୍ତୁ (Save Photo for Facebook)</span>
+                </button>
+
                 {/* Mobile System Native Share Sheet */}
                 <button
                   onClick={handleNativeShare}
                   className="w-full py-3 px-4 bg-amber-800 hover:bg-amber-900 text-white font-bold rounded-2xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 transform active:scale-95 text-xs font-odia"
                 >
                   <Share2 className="w-4 h-4 text-amber-200" />
-                  <span>ଅନ୍ୟ ସୋସିଆଲ୍ ମିଡିଆରେ ସେୟାର୍ (More Apps / Mobile Share)</span>
+                  <span>ଅନ୍ୟ ସୋସିଆଲ୍ ମିଡିଆରେ ସେୟାର୍ (Mobile App Share)</span>
                 </button>
 
                 {/* Copy Link Button */}
@@ -2685,15 +2931,84 @@ export default function App() {
               </div>
 
               {/* Footer Notice */}
-              <div className="pt-2 text-center text-[11px] text-slate-400 border-t border-slate-100 font-odia">
-                WhatsApp କିମ୍ବା Facebook ରେ ସେୟାର୍ କଲେ ଗୀତ ଓ ଫୋଟର ସବିଶେଷ ତଥ୍ୟ ସହିତ ଶୋ' ହେବ |
+              <div className="pt-2 text-center text-[11px] text-slate-500 border-t border-slate-100 font-odia leading-relaxed">
+                💡 <strong>Facebook Tips:</strong> Facebook ରେ ଫୋଟ ଶୋ' କରାଇବା ପାଇଁ "Save Photo" ବଟନ୍ କ୍ଲିକ୍ କରି ଫୋଟ ଡାଉନ୍‌ଲୋଡ୍ କରନ୍ତୁ କିମ୍ବା Mobile Share ଦ୍ୱାରା Facebook App ଆଟାଚ୍ କରନ୍ତୁ |
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
 
+      {/* DEDICATED COMMENT BOX POPUP MODAL */}
+      <AnimatePresence>
+        {commentModalItem && (
+          <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 z-[75]">
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden border border-amber-200 p-6 space-y-4"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-amber-100 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-amber-100/80 rounded-2xl text-amber-800">
+                    <MessageSquare className="w-6 h-6 text-amber-800" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-slate-800 text-lg font-odia">
+                      ମତାମତ ବାକ୍ସ (Comment Box)
+                    </h3>
+                    <p className="text-xs text-slate-400 font-odia">
+                      "{commentModalItem.title}" ପାଇଁ ଆପଣଙ୍କ ଅମୂଲ୍ୟ ମତାମତ ଦିଅନ୍ତୁ
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setCommentModalItem(null)}
+                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
+              {/* Item Card Banner */}
+              <div className="flex items-center gap-3 bg-amber-50/60 p-3 rounded-2xl border border-amber-100">
+                {commentModalItem.imageUrl && (
+                  <img
+                    src={commentModalItem.imageUrl}
+                    alt={commentModalItem.title}
+                    className="w-14 h-14 rounded-xl object-cover border border-amber-200"
+                    referrerPolicy="no-referrer"
+                  />
+                )}
+                <div>
+                  <h4 className="font-bold text-amber-950 font-odia text-sm">
+                    {commentModalItem.title}
+                  </h4>
+                  {commentModalItem.subtitle && (
+                    <p className="text-xs text-amber-800/80 font-medium font-odia">
+                      {commentModalItem.subtitle}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Comment Box */}
+              {renderCommentBox(commentModalItem.id, commentModalItem.type, commentModalItem.title)}
+
+              <div className="pt-1 text-center">
+                <button
+                  onClick={() => setCommentModalItem(null)}
+                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer font-odia"
+                >
+                  ବନ୍ଦ କରନ୍ତୁ (Close)
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   );
