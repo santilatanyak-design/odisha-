@@ -342,11 +342,11 @@ export function subscribeDeletedIds(callback: (deletedSet: Set<string>) => void)
       localStorage.setItem("swagat_deleted_samples", JSON.stringify(arr));
       callback(deletedSet);
     } catch (e) {
-      console.error("Error in subscribeDeletedIds listener:", e);
+      console.debug("subscribeDeletedIds local fallback:", e);
       callback(getDeletedIds());
     }
   }, (err) => {
-    console.warn("Notice in subscribeDeletedIds listener:", err);
+    console.debug("subscribeDeletedIds error fallback:", err?.message || err);
     callback(getDeletedIds());
   });
 }
@@ -434,11 +434,11 @@ export function subscribeComments(callback: (comments: DbComment[]) => void): ()
       saveLocalComments(finalComments);
       callback(finalComments);
     } catch (e) {
-      console.error("Error in subscribeComments listener:", e);
+      console.debug("subscribeComments local fallback:", e);
       callback(getLocalComments());
     }
   }, (err) => {
-    console.warn("Notice in subscribeComments listener:", err);
+    console.debug("subscribeComments error fallback:", err?.message || err);
     callback(getLocalComments());
   });
 }
@@ -481,7 +481,7 @@ export async function incrementSongViews(songId: string): Promise<number> {
       views: currentCount
     }, { merge: true });
   } catch (e) {
-    console.warn("Firestore incrementSongViews notice (stored locally):", e);
+    console.debug("Firestore incrementSongViews notice (stored locally):", e);
   }
 
   return currentCount;
@@ -501,11 +501,11 @@ export function subscribeSongViews(callback: (viewsMap: Record<string, number>) 
       saveLocalSongViews(viewsMap);
       callback(viewsMap);
     } catch (e) {
-      console.error("Error in subscribeSongViews listener:", e);
+      console.debug("subscribeSongViews local fallback:", e);
       callback(getLocalSongViews());
     }
   }, (err) => {
-    console.warn("Notice in subscribeSongViews listener:", err);
+    console.debug("subscribeSongViews error fallback:", err?.message || err);
     callback(getLocalSongViews());
   });
 }
@@ -624,13 +624,13 @@ export function subscribeSongs(callback: (songs: DbSong[]) => void): () => void 
 
       callback(songsToReturn);
     } catch (err) {
-      console.error("Error in subscribeSongs listener:", err);
+      console.debug("subscribeSongs local fallback:", err);
       const deletedIds = getDeletedIds();
       const local = await getAllSongsFromLocal();
       callback(local.filter(s => !deletedIds.has(s.id)));
     }
   }, (error) => {
-    console.error("Firestore songs onSnapshot error:", error);
+    console.debug("subscribeSongs onSnapshot fallback:", error?.message || error);
     const deletedIds = getDeletedIds();
     getAllSongsFromLocal().then(local => callback(local.filter(s => !deletedIds.has(s.id))));
   });
@@ -813,13 +813,13 @@ export function subscribeAds(callback: (ads: DbAd[]) => void): () => void {
 
       callback(adsToReturn);
     } catch (err) {
-      console.error("Error in subscribeAds listener:", err);
+      console.debug("subscribeAds local fallback:", err);
       const deletedIds = getDeletedIds();
       const local = await getAllAdsFromLocal();
       callback(local.filter(a => !deletedIds.has(a.id)));
     }
   }, (error) => {
-    console.error("Firestore ads onSnapshot error:", error);
+    console.debug("subscribeAds onSnapshot fallback:", error?.message || error);
     const deletedIds = getDeletedIds();
     getAllAdsFromLocal().then(local => callback(local.filter(a => !deletedIds.has(a.id))));
   });

@@ -219,14 +219,16 @@ export default function App() {
 
   const getShareDetails = () => {
     if (!shareModalItem) return { text: "", url: "" };
-    const appUrl = window.location.href;
+    const origin = window.location.origin + window.location.pathname;
     const isSong = shareModalItem.type === "song";
+    const shareUrl = `${origin}?${isSong ? "song" : "poster"}=${encodeURIComponent(shareModalItem.id)}`;
+    const imgUrl = (shareModalItem.imageUrl && shareModalItem.imageUrl.startsWith("http")) ? shareModalItem.imageUrl : "";
 
     const text = isSong 
-      ? `🎵 *${shareModalItem.title}*\n🎤 ଗାୟକ/Artist: ${shareModalItem.subtitle || "Odia Song"}\n\nସ୍ୱାଗତ ଓଡ଼ିଆ ଆପ୍‌ରେ ଏହି ସୁନ୍ଦର ଗୀତ ଓ ଫୋଟ ଦେଖନ୍ତୁ ଓ ଶୁଣନ୍ତୁ! 👇\nListen and view on Swagata Odia App:`
-      : `🖼️ *${shareModalItem.title}*\n\nସ୍ୱାଗତ ଓଡ଼ିଆ ଆପ୍‌ରେ ଏହି ସୁନ୍ଦର ଫୋଟ/ପୋଷ୍ଟର ଦେଖନ୍ତୁ! 👇\nView special poster photo on Swagata Odia App:`;
+      ? `🎵 *${shareModalItem.title}*\n🎤 ଗାୟକ/Artist: ${shareModalItem.subtitle || "Odia Song"}${imgUrl ? `\n🖼️ ଫୋଟ/Poster: ${imgUrl}` : ""}\n\nସ୍ୱାଗତ ଓଡ଼ିଆ ଆପ୍‌ରେ ଏହି ସୁନ୍ଦର ଗୀତ ଓ ଫୋଟ ଦେଖନ୍ତୁ ଓ ଶୁଣନ୍ତୁ! 👇`
+      : `🖼️ *${shareModalItem.title}*${imgUrl ? `\n🖼️ ଫୋଟ/Poster: ${imgUrl}` : ""}\n\nସ୍ୱାଗତ ଓଡ଼ିଆ ଆପ୍‌ରେ ଏହି ସୁନ୍ଦର ଫୋଟ/ପୋଷ୍ଟର ଦେଖନ୍ତୁ! 👇`;
 
-    return { text, url: appUrl };
+    return { text, url: shareUrl };
   };
 
   const handleWhatsAppShare = () => {
@@ -260,38 +262,10 @@ export default function App() {
     }
   };
 
-  const handleFacebookShare = async () => {
+  const handleFacebookShare = () => {
     if (!shareModalItem) return;
     const { text, url } = getShareDetails();
-
-    // 1. If mobile native file share is available, try native share sheet first (Attaches photo file directly into Facebook app!)
-    if (navigator.canShare) {
-      try {
-        let fileBlob = shareModalItem.photoBlob;
-        if (!fileBlob && shareModalItem.imageUrl) {
-          const resp = await fetch(shareModalItem.imageUrl);
-          fileBlob = await resp.blob();
-        }
-        if (fileBlob) {
-          const ext = fileBlob.type.includes("png") ? "png" : "jpg";
-          const file = new File([fileBlob], `${shareModalItem.title}.${ext}`, { type: fileBlob.type || "image/jpeg" });
-          if (navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              title: shareModalItem.title,
-              text: text,
-              url: url,
-              files: [file]
-            });
-            return;
-          }
-        }
-      } catch (e) {
-        console.log("Facebook file share fallback:", e);
-      }
-    }
-
-    // 2. Otherwise download photo to gallery and open Facebook sharer window
-    await handleDownloadPhotoForShare();
+    // Facebook Web Link Share (renders Facebook Link Card with photo preview that opens website when clicked)
     const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}&quote=${encodeURIComponent(text)}`;
     window.open(facebookUrl, "_blank");
   };
@@ -481,6 +455,32 @@ export default function App() {
     });
     return () => unsub();
   }, []);
+
+  // Dynamic OpenGraph metadata update for Facebook / Social scrapers
+  useEffect(() => {
+    const itemToShare = shareModalItem || (currentSong ? {
+      title: currentSong.title,
+      imageUrl: currentSong.photoUrl
+    } : null);
+
+    if (itemToShare && itemToShare.imageUrl) {
+      let ogImageMeta = document.querySelector('meta[property="og:image"]');
+      if (!ogImageMeta) {
+        ogImageMeta = document.createElement('meta');
+        ogImageMeta.setAttribute('property', 'og:image');
+        document.head.appendChild(ogImageMeta);
+      }
+      ogImageMeta.setAttribute('content', itemToShare.imageUrl);
+
+      let ogTitleMeta = document.querySelector('meta[property="og:title"]');
+      if (!ogTitleMeta) {
+        ogTitleMeta = document.createElement('meta');
+        ogTitleMeta.setAttribute('property', 'og:title');
+        document.head.appendChild(ogTitleMeta);
+      }
+      ogTitleMeta.setAttribute('content', `${itemToShare.title} - Swagata Odia`);
+    }
+  }, [shareModalItem, currentSong]);
 
   const handlePostComment = async (itemId: string, itemType: "song" | "ad") => {
     const text = (commentTextMap[itemId] || "").trim();
@@ -698,6 +698,31 @@ export default function App() {
     }, 6000);
     return () => clearInterval(interval);
   }, [allAds.length]);
+
+  // Handle incoming shared links from Facebook/WhatsApp (?song=ID or ?poster=ID)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const songId = params.get("song");
+    const posterId = params.get("poster");
+
+    if (songId && allSongs.length > 0) {
+      const found = allSongs.find(s => s.id === songId);
+      if (found && (!currentSong || currentSong.id !== found.id)) {
+        setCurrentSong(found);
+        setIsPlaying(true);
+      }
+    } else if (posterId && allAds.length > 0) {
+      const foundAd = allAds.find(a => a.id === posterId);
+      if (foundAd) {
+        setShareModalItem({
+          type: "ad",
+          id: foundAd.id,
+          title: foundAd.title,
+          imageUrl: foundAd.imageUrl
+        });
+      }
+    }
+  }, [allSongs, allAds]);
 
   // Audio events synchronization
   useEffect(() => {
@@ -2931,8 +2956,8 @@ export default function App() {
               </div>
 
               {/* Footer Notice */}
-              <div className="pt-2 text-center text-[11px] text-slate-500 border-t border-slate-100 font-odia leading-relaxed">
-                💡 <strong>Facebook Tips:</strong> Facebook ରେ ଫୋଟ ଶୋ' କରାଇବା ପାଇଁ "Save Photo" ବଟନ୍ କ୍ଲିକ୍ କରି ଫୋଟ ଡାଉନ୍‌ଲୋଡ୍ କରନ୍ତୁ କିମ୍ବା Mobile Share ଦ୍ୱାରା Facebook App ଆଟାଚ୍ କରନ୍ତୁ |
+              <div className="pt-2 text-center text-[11px] text-slate-600 border-t border-slate-100 font-odia leading-relaxed bg-amber-50/50 p-2.5 rounded-xl border border-amber-100">
+                💡 <strong>ଫେସବୁକ୍ ରୁ ୱେବସାଇଟ୍ ଆସିବା ପାଇଁ:</strong> "Facebook" ବଟନ୍ ଦ୍ୱାରା Post କଲେ Facebook ରେ ଫୋଟ ଓ Card ଶୋ' ହେବ। ଦର୍ଶକ Facebook ରେ ସେହି ଫୋଟ ଉପରେ କ୍ଲିକ୍ କଲେ ସିଧାସଳଖ ଆପଣଙ୍କ <strong>Swagata Odia Website</strong> କୁ ଆସିବେ!
               </div>
             </motion.div>
           </div>
