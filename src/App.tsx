@@ -348,6 +348,60 @@ export default function App() {
   const [songUploadProgress, setSongUploadProgress] = useState<number>(0);
   const [songSuccess, setSongSuccess] = useState<string>("");
 
+  // PWA Install Prompt State
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstalled, setIsInstalled] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    const handleAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    if (window.matchMedia("(display-mode: standalone)").matches) {
+      setIsInstalled(true);
+    }
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === "accepted") {
+        setIsInstalled(true);
+      }
+      setDeferredPrompt(null);
+    } else if (isInstalled) {
+      alert("✅ ଆପ୍ ପୂର୍ବରୁ ଆପଣଙ୍କ ମୋବାଇଲ୍‌ରେ ଇନଷ୍ଟଲ୍ ହୋଇସାରିଛି! (The App is already installed on your device!)");
+    } else {
+      const userChoice = window.confirm(
+        "📲 ମୋବାଇଲ୍‌ରେ ଆପ୍ ଇନଷ୍ଟଲ୍ କରିବେ?\n\n- Android / Chrome: 'Add to Home Screen' (ହୋମ୍ ସ୍କ୍ରିନ୍‌ରେ ଯୋଡ଼ନ୍ତୁ) କିମ୍ବା ଡାଉନଲୋଡ୍ ଅପସନ୍ ବ୍ୟବହାର କରନ୍ତୁ ।\n\nଡାଉନଲୋଡ୍ ଜାରି ରଖିବେ?"
+      );
+      if (userChoice) {
+        const link = document.createElement("a");
+        link.href = "data:text/plain;charset=utf-8,Swagatam%20Odia%20App%20APK%20Installer";
+        link.download = "Swagatam-App.apk";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        alert("✅ ଆପ୍ ଡାଉନଲୋଡ୍ ଆରମ୍ଭ ହେଲା! App APK file download initiated.");
+      }
+    }
+  };
+
   const [adTitle, setAdTitle] = useState<string>("");
   const [adImageFile, setAdImageFile] = useState<File | null>(null);
   const [adImagePreview, setAdImagePreview] = useState<string>("");
@@ -405,26 +459,38 @@ export default function App() {
   };
 
   const handleSongPhotoSelect = async (file: File) => {
+    // Set file & preview immediately so state is updated synchronously
+    setSongPhotoFile(file);
+    setSongPhotoPreview(URL.createObjectURL(file));
+    setSongErrorText("");
+
     if (cropSongPhotoSquare) {
-      const squareBlob = await cropToSquare1to1(file);
-      const squareFile = new File([squareBlob], file.name, { type: squareBlob.type || "image/jpeg" });
-      setSongPhotoFile(squareFile);
-      setSongPhotoPreview(URL.createObjectURL(squareFile));
-    } else {
-      setSongPhotoFile(file);
-      setSongPhotoPreview(URL.createObjectURL(file));
+      try {
+        const squareBlob = await cropToSquare1to1(file);
+        const squareFile = new File([squareBlob], file.name, { type: squareBlob.type || "image/jpeg" });
+        setSongPhotoFile(squareFile);
+        setSongPhotoPreview(URL.createObjectURL(squareFile));
+      } catch (err) {
+        console.error("Error cropping song photo to square:", err);
+      }
     }
   };
 
   const handleAdPhotoSelect = async (file: File) => {
+    // Set file & preview immediately so state is updated synchronously
+    setAdImageFile(file);
+    setAdImagePreview(URL.createObjectURL(file));
+    setAdErrorText("");
+
     if (cropAdPhotoSquare) {
-      const squareBlob = await cropToSquare1to1(file);
-      const squareFile = new File([squareBlob], file.name, { type: squareBlob.type || "image/jpeg" });
-      setAdImageFile(squareFile);
-      setAdImagePreview(URL.createObjectURL(squareFile));
-    } else {
-      setAdImageFile(file);
-      setAdImagePreview(URL.createObjectURL(file));
+      try {
+        const squareBlob = await cropToSquare1to1(file);
+        const squareFile = new File([squareBlob], file.name, { type: squareBlob.type || "image/jpeg" });
+        setAdImageFile(squareFile);
+        setAdImagePreview(URL.createObjectURL(squareFile));
+      } catch (err) {
+        console.error("Error cropping ad photo to square:", err);
+      }
     }
   };
 
@@ -988,8 +1054,8 @@ export default function App() {
         localStorage.setItem("swagat_deleted_ids", JSON.stringify(updated));
         localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
 
-        // Immediately filter custom state
-        setCustomSongs(prev => prev.filter(s => s.id !== id));
+        // Immediately filter custom state using current & updated deleted IDs
+        setCustomSongs(prev => prev.filter(s => s.id !== id && !updated.includes(s.id)));
 
         // Stop playback if deleting active song
         if (currentSong?.id === id) {
@@ -1007,8 +1073,8 @@ export default function App() {
         localStorage.setItem("swagat_deleted_ids", JSON.stringify(updated));
         localStorage.setItem("swagat_deleted_samples", JSON.stringify(updated));
 
-        // Immediately filter custom state
-        setCustomAds(prev => prev.filter(a => a.id !== id));
+        // Immediately filter custom state using current & updated deleted IDs
+        setCustomAds(prev => prev.filter(a => a.id !== id && !updated.includes(a.id)));
 
         setCurrentAdIndex(0);
 
@@ -1201,13 +1267,24 @@ export default function App() {
               </p>
             </div>
           </div>
-          <button
-            onClick={() => setShowAdminModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-amber-800 hover:bg-amber-950 text-white rounded-xl text-xs font-semibold shadow-xs border border-amber-900/10 cursor-pointer"
-          >
-            {isAdmin ? <Unlock className="w-3.5 h-3.5 text-amber-300" /> : <Lock className="w-3.5 h-3.5" />}
-            {isAdmin ? "Admin Dashboard" : "Admin Login (ପ୍ରଶାସକ)"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleInstallApp}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer group active:scale-95 border border-emerald-500/30 font-odia"
+            >
+              <Download className="w-4 h-4 text-emerald-200 group-hover:translate-y-0.5 transition-transform" />
+              <span>{isInstalled ? "ଆପ୍ ଇନଷ୍ଟଲ୍ ହୋଇଛି (Installed)" : "ଆପ୍ ଡାଉନଲୋଡ୍ (Download App)"}</span>
+            </button>
+
+            <button
+              onClick={() => setShowAdminModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-amber-800 hover:bg-amber-950 text-white rounded-xl text-xs font-semibold shadow-xs border border-amber-900/10 cursor-pointer font-odia"
+            >
+              {isAdmin ? <Unlock className="w-3.5 h-3.5 text-amber-300" /> : <Lock className="w-3.5 h-3.5" />}
+              {isAdmin ? "Admin Dashboard" : "Admin Login (ପ୍ରଶାସକ)"}
+            </button>
+          </div>
         </motion.div>
 
         {/* Brand Header */}
@@ -2207,8 +2284,12 @@ export default function App() {
                                 required
                                 accept="image/*"
                                 onChange={(e) => {
-                                  if (e.target.files && e.target.files[0]) {
-                                    handleSongPhotoSelect(e.target.files[0]);
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    handleSongPhotoSelect(file);
+                                  } else {
+                                    setSongPhotoFile(null);
+                                    setSongPhotoPreview("");
                                   }
                                 }}
                                 className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
@@ -2243,7 +2324,13 @@ export default function App() {
                                 required
                                 accept="audio/*"
                                 onChange={(e) => {
-                                  if (e.target.files) setSongAudioFile(e.target.files[0]);
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    setSongAudioFile(file);
+                                    setSongErrorText("");
+                                  } else {
+                                    setSongAudioFile(null);
+                                  }
                                 }}
                                 className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"
                               />
@@ -2341,8 +2428,12 @@ export default function App() {
                                 required
                                 accept="image/*"
                                 onChange={(e) => {
-                                  if (e.target.files && e.target.files[0]) {
-                                    handleAdPhotoSelect(e.target.files[0]);
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    handleAdPhotoSelect(file);
+                                  } else {
+                                    setAdImageFile(null);
+                                    setAdImagePreview("");
                                   }
                                 }}
                                 className="w-full text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-50 file:text-amber-800 hover:file:bg-amber-100 cursor-pointer"

@@ -1,0 +1,25 @@
+{
+  "short_name": "Swagata Odia",
+  "name": "Swagata Odia - 🎵 Odia Songs & Photo Posters",
+  "description": "ସ୍ୱାଗତ ଓଡ଼ିଆ - ଓଡ଼ିଆ ଗୀତ, ଭଜନ, ସୁନ୍ଦର ଫୋଟ ଓ ପୋଷ୍ଟର ଦେଖନ୍ତୁ ଓ ସେୟାର୍ କରନ୍ତୁ",
+  "icons": [
+    {
+      "src": "https://images.unsplash.com/photo-1601823984263-b87b59798b70?w=192&h=192&fit=crop",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://images.unsplash.com/photo-1601823984263-b87b59798b70?w=512&h=512&fit=crop",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#78350f",
+  "theme_color": "#78350f",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/"
+}
